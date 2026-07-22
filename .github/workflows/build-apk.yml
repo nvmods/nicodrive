@@ -99,7 +99,13 @@ jobs:
 
           echo "===== Gradle ====="
           gradle --version
-
+      - name: Corriger BudgetViewModel (return multi-ligne)
+        run: |
+          perl -0pi -e 's/return\@withContext\n\s+"Erreur/return\@withContext "Erreur/' \
+            NicoBudget/app/src/main/java/com/example/nicobudget/data/model/BudgetViewModel.kt
+          echo "===== Verification ligne corrigee ====="
+          grep -n 'return@withContext "Erreur' \
+            NicoBudget/app/src/main/java/com/example/nicobudget/data/model/BudgetViewModel.kt
       - name: Compiler l'APK debug
         working-directory: NicoBudget
         shell: bash
