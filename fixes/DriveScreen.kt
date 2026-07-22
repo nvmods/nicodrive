@@ -71,36 +71,23 @@ fun DriveScreen(
         status = "Connexion à la boîte mail…"
         scope.launch {
             try {
-                val pdfs = withContext(Dispatchers.IO) {
-                    DriveMailSync.fetchOrderPdfs(context, config)
+                val report = withContext(Dispatchers.IO) {
+                    DriveMailSync.sync(context, config)
                 }
-                if (pdfs.isEmpty()) {
-                    status = "Aucun bon de commande téléchargeable trouvé " +
-                        "dans les mails récents."
-                } else {
-                    status = "${pdfs.size} PDF trouvé(s), import…"
-                    pdfs.forEach { file ->
-                        viewModel.importDrivePdf(Uri.fromFile(file), context) {
-                            status = it
-                        }
+                status = "${report.mailsScanned} mails scannés, " +
+                    "${report.leclercMails} Leclerc, " +
+                    "${report.linksFound} lien(s), " +
+                    "${report.pdfs.size} PDF." +
+                    (report.failures.firstOrNull()?.let { "\nÉchec : $it" } ?: "")
+                report.pdfs.forEach { file ->
+                    viewModel.importDrivePdf(Uri.fromFile(file), context) {
+                        status = it
                     }
                 }
             } catch (e: Exception) {
                 status = "Erreur mail : ${e.message}"
             } finally {
                 syncing = false
-            }
-        }
-    }
-
-    val launcher = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.OpenMultipleDocuments()
-    ) { uris ->
-        if (uris.isEmpty()) {
-            status = "Aucun fichier sélectionné."
-        } else {
-            uris.forEach { uri ->
-                viewModel.importDrivePdf(uri, context) { msg -> status = msg }
             }
         }
     }
