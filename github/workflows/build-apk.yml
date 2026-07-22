@@ -14,7 +14,7 @@ jobs:
       - name: Extraire le projet du zip
         run: unzip -o NicoBudget_v1.1_drive.zip
 
-      - name: Reecrire app/build.gradle.kts (JVM 17)
+      - name: Reecrire app/build.gradle.kts (JVM 17 + Room 2.7.1)
         shell: bash
         run: |
           cat > NicoBudget/app/build.gradle.kts << 'FIN_DU_FICHIER'
@@ -68,9 +68,9 @@ jobs:
               implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
               implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
               implementation("androidx.compose.runtime:runtime-livedata")
-              implementation("androidx.room:room-runtime:2.6.1")
-              implementation("androidx.room:room-ktx:2.6.1")
-              ksp("androidx.room:room-compiler:2.6.1")
+              implementation("androidx.room:room-runtime:2.7.1")
+              implementation("androidx.room:room-ktx:2.7.1")
+              ksp("androidx.room:room-compiler:2.7.1")
               implementation("com.github.PhilJay:MPAndroidChart:v3.1.0")
               implementation("com.tom-roush:pdfbox-android:2.0.27.0")
               debugImplementation("androidx.compose.ui:ui-tooling")
