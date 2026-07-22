@@ -66,6 +66,8 @@ jobs:
 
           echo "===== build.gradle.kts utilisé ====="
           cat NicoBudget/app/build.gradle.kts
+      - name: Appliquer le parser corrige
+        run: cp fixes/LeclercPdfParser.kt NicoBudget/app/src/main/java/com/example/nicobudget/drive/LeclercPdfParser.kt
 
       - name: Configurer Gradle
         shell: bash
