@@ -88,7 +88,7 @@ fun DriveScreen(
                 }
                 status = "${report.mailsScanned} mails scannés, " +
                     "${report.leclercMails} Leclerc, " +
-                    "${report.linksFound} lien(s), " +
+                    "${report.linksTried} lien(s) testés, " +
                     "${report.pdfs.size} PDF." +
                     (report.failures.firstOrNull()?.let { "\nÉchec : $it" } ?: "")
                 report.pdfs.forEach { file ->
