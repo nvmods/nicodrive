@@ -1,0 +1,10 @@
+type,date,libelle,montant,categorie
+ressource,2025-03-01,Salaire,2500,revenu
+ressource,2025-03-01,CAF,300,revenu
+charge,2025-03-01,Loyer,750,logement
+charge,2025-03-01,Assurance,60,auto
+charge,2025-03-01,Netflix,15,abonnement
+operation,2025-03-02,Supermarché,120,alimentation
+operation,2025-03-04,Station essence,55,transport
+operation,2025-03-06,Cinéma,20,loisir
+operation,2025-03-08,Pharmacie,18,santé
