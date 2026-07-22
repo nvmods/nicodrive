@@ -2,174 +2,47 @@ name: Build APK
 
 on:
   push:
-    branches:
-      - main
-  workflow_dispatch:
-
-permissions:
-  contents: read
+    branches: [ main ]
+  workflow_dispatch: {}
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Récupérer le dépôt
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Vérifier les fichiers
-        shell: bash
+      - name: Numero de version unique par build
         run: |
-          test -f NicoBudget_v1.1_drive.zip || {
-            echo "::error::NicoBudget_v1.1_drive.zip est introuvable"
-            exit 1
-          }
+          sed -i "s/versionCode = 100/versionCode = ${{ github.run_number }}/" app/build.gradle.kts
+          sed -i "s/versionName = \"1.2-drive\"/versionName = \"1.2-b${{ github.run_number }}\"/" app/build.gradle.kts
+          grep -E "versionCode|versionName" app/build.gradle.kts
 
-          test -f fixes/app-build.gradle.kts || {
-            echo "::error::fixes/app-build.gradle.kts est introuvable"
-            exit 1
-          }
-
-      - name: Extraire le projet
-        shell: bash
-        run: |
-          rm -rf NicoBudget
-          unzip -o NicoBudget_v1.1_drive.zip
-
-          echo "===== Projet extrait ====="
-          find NicoBudget -maxdepth 4 -type f | sort
-
-          test -d NicoBudget || {
-            echo "::error::Le dossier NicoBudget est introuvable après extraction"
-            exit 1
-          }
-
-          test -f NicoBudget/settings.gradle.kts || {
-            echo "::error::NicoBudget/settings.gradle.kts est introuvable"
-            exit 1
-          }
-
-          test -f NicoBudget/build.gradle.kts || {
-            echo "::error::NicoBudget/build.gradle.kts est introuvable"
-            exit 1
-          }
-
-          test -f NicoBudget/app/build.gradle.kts || {
-            echo "::error::NicoBudget/app/build.gradle.kts est introuvable"
-            exit 1
-          }
-
-      - name: Appliquer le build.gradle.kts corrigé
-        shell: bash
-        run: |
-          cp fixes/app-build.gradle.kts NicoBudget/app/build.gradle.kts
-
-          echo "===== build.gradle.kts utilisé ====="
-          cat NicoBudget/app/build.gradle.kts
-      - name: Appliquer les correctifs
-        run: |
-          cp fixes/app-build.gradle.kts NicoBudget/app/build.gradle.kts
-          cp fixes/LeclercPdfParser.kt NicoBudget/app/src/main/java/com/example/nicobudget/drive/LeclercPdfParser.kt
-          cp fixes/DriveMailSync.kt NicoBudget/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt
-          cp fixes/DriveScreen.kt NicoBudget/app/src/main/java/com/example/nicobudget/ui/DriveScreen.kt
-          cp fixes/AndroidManifest.xml NicoBudget/app/src/main/AndroidManifest.xml
-          echo "===== Correctifs appliques ====="
-          ls -la NicoBudget/app/src/main/java/com/example/nicobudget/drive/
-          sed -i "s/versionCode = 2/versionCode = ${{ github.run_number }}/" NicoBudget/app/build.gradle.kts
-          sed -i "s/versionName = \"1.1-drive\"/versionName = \"1.1-b${{ github.run_number }}\"/" NicoBudget/app/build.gradle.kts
-          
-      - name: Configurer Gradle
-        shell: bash
-        run: |
-          touch NicoBudget/gradle.properties
-
-          if ! grep -q "^org.gradle.jvmargs=" NicoBudget/gradle.properties; then
-            echo "org.gradle.jvmargs=-Xmx4g -Dfile.encoding=UTF-8" >> NicoBudget/gradle.properties
-          fi
-
-          echo "===== gradle.properties ====="
-          cat NicoBudget/gradle.properties
-
-      - name: Installer Java 17
+      - name: JDK 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
-          cache: gradle
+          java-version: '17'
 
-      - name: Installer Gradle 8.10.2
+      - name: Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: "8.10.2"
+          gradle-version: '8.10.2'
 
-      - name: Afficher les versions
-        shell: bash
-        run: |
-          echo "===== Java ====="
-          java -version
-
-          echo "===== Gradle ====="
-          gradle --version
-      - name: Corriger BudgetViewModel (return multi-ligne)
-        run: |
-          perl -0pi -e 's/return\@withContext\n\s+"Erreur/return\@withContext "Erreur/' \
-            NicoBudget/app/src/main/java/com/example/nicobudget/data/model/BudgetViewModel.kt
-          echo "===== Verification ligne corrigee ====="
-          grep -n 'return@withContext "Erreur' \
-            NicoBudget/app/src/main/java/com/example/nicobudget/data/model/BudgetViewModel.kt
-      - name: Compiler l'APK debug
-        working-directory: NicoBudget
+      - name: Build debug APK
         shell: bash
         run: |
           set +e
           set -o pipefail
-
-          gradle clean assembleDebug \
-            --no-daemon \
-            --stacktrace \
-            --console=plain \
-            --warning-mode all \
-            2>&1 | tee build.log
-
+          gradle assembleDebug --no-daemon --console=plain 2>&1 | tee build.log
           STATUS=${PIPESTATUS[0]}
-
           echo
           echo "===== ERREURS PRINCIPALES ====="
-
-          grep -nE \
-            '(^e: |\[ksp\]|What went wrong|Execution failed|Caused by:|error:|Exception)' \
-            build.log | head -150 || true
-
-          echo
-          echo "===== FIN DU JOURNAL ====="
-          tail -100 build.log || true
-
+          grep -nE '(^e: |\[ksp\]|What went wrong|Execution failed|Caused by:|error:)' build.log | head -80 || true
           exit "$STATUS"
-
-      - name: Publier le journal de compilation
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: NicoBudget-build-log
-          path: NicoBudget/build.log
-          if-no-files-found: warn
-          retention-days: 7
-
-      - name: Vérifier l'APK
-        shell: bash
-        run: |
-          echo "===== APK générés ====="
-          find NicoBudget/app/build/outputs -type f -name "*.apk" -ls
-
-          test -f NicoBudget/app/build/outputs/apk/debug/app-debug.apk || {
-            echo "::error::L'APK debug n'a pas été généré"
-            exit 1
-          }
 
       - name: Publier l'APK
         uses: actions/upload-artifact@v4
         with:
           name: NicoBudget-debug-apk
-          path: NicoBudget/app/build/outputs/apk/debug/app-debug.apk
-          if-no-files-found: error
+          path: app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
