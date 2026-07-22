@@ -26,6 +26,13 @@ object DriveMailSync {
             """apple\.com|google\.com|play\.google|mentions|cgv|contact""",
         RegexOption.IGNORE_CASE
     )
+    // Les deux graphies existent : bon-de-commande.aspx (bouton du mail)
+    // et bondecommande.aspx (lien direct).
+    private val RE_ASPX = Regex(
+        """https?://[^\s"'<>\\]+bon-?de-?commande\.aspx[^\s"'<>\\]*""",
+        RegexOption.IGNORE_CASE
+    )
+    private val RE_BDC = Regex("""bon-?de-?commande\.aspx""", RegexOption.IGNORE_CASE)
 
     data class MailConfig(val host: String, val user: String, val password: String)
 
@@ -78,12 +85,7 @@ object DriveMailSync {
             .replace("=3d", "=")
             .replace("&amp;", "&")
 
-    /**
-     * Tous les liens candidats du mail, du plus prometteur au moins
-     * prometteur. Le vrai lien du bouton est souvent un tracker sans mot-clé,
-     * donc on garde tout ce qui n'est pas image/junk et on essaiera dans
-     * l'ordre.
-     */
+    /** Liens candidats du mail, du plus prometteur au moins prometteur. */
     private fun candidateLinks(body: String): List<String> {
         val all = RE_URL.findAll(body).map { it.value.trimEnd('.', ',', ';') }
             .distinct()
@@ -91,8 +93,10 @@ object DriveMailSync {
             .toList()
         fun score(u: String): Int {
             var s = 0
-            if (u.contains("bondecommande.aspx", true)) s += 100
-            if (u.contains("bondecommande", true)) s += 40
+            if (RE_BDC.containsMatchIn(u)) s += 100
+            if (u.contains("bon-de-commande", true) ||
+                u.contains("bondecommande", true)
+            ) s += 40
             if (u.contains("commande", true)) s += 20
             if (u.contains("leclercdrive", true)) s += 10
             if (u.contains("iIdC", true) || u.contains("dDtC", true)) s += 50
@@ -184,47 +188,70 @@ object DriveMailSync {
         }
     }
 
-    /**
-     * Télécharge en suivant les redirections, y compris les changements de
-     * protocole http<->https que HttpURLConnection ne suit pas tout seul.
-     */
+    /** GET avec suivi de redirections (y compris http<->https). */
+    private fun fetch(url: String): Triple<Int, String, ByteArray>? {
+        var current = url
+        var hops = 0
+        while (true) {
+            val conn = URL(current).openConnection() as HttpURLConnection
+            conn.connectTimeout = 15000
+            conn.readTimeout = 30000
+            conn.instanceFollowRedirects = false
+            conn.setRequestProperty(
+                "User-Agent",
+                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36"
+            )
+            val code = conn.responseCode
+            if (code in 300..399 && hops < 8) {
+                val loc = conn.getHeaderField("Location") ?: return null
+                current = if (loc.startsWith("http")) loc
+                else URL(URL(current), loc).toString()
+                hops++
+                continue
+            }
+            val type = conn.contentType ?: "?"
+            val bytes = try {
+                conn.inputStream.use { it.readBytes() }
+            } catch (e: Exception) {
+                conn.errorStream?.use { it.readBytes() } ?: ByteArray(0)
+            }
+            return Triple(code, type, bytes)
+        }
+    }
+
+    private fun isPdf(bytes: ByteArray): Boolean =
+        bytes.size >= 4 && bytes.decodeToString(0, 4).startsWith("%PDF")
+
     private fun downloadPdf(context: Context, url: String): Pair<String, File?> {
         return try {
-            var current = url
-            var conn: HttpURLConnection
-            var hops = 0
-            while (true) {
-                conn = URL(current).openConnection() as HttpURLConnection
-                conn.connectTimeout = 15000
-                conn.readTimeout = 30000
-                conn.instanceFollowRedirects = false
-                conn.setRequestProperty(
-                    "User-Agent",
-                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36"
-                )
-                val code = conn.responseCode
-                if (code in 300..399 && hops < 8) {
-                    val loc = conn.getHeaderField("Location") ?: break
-                    current = if (loc.startsWith("http")) loc
-                    else URL(URL(current), loc).toString()
-                    hops++
-                    continue
+            var (code, type, bytes) = fetch(url)
+                ?: return "redirection sans Location" to null
+
+            // Rebond : si on reçoit du HTML, y chercher le lien du bon de
+            // commande et le suivre.
+            var hopped = false
+            if (!isPdf(bytes) && type.contains("html", ignoreCase = true)) {
+                val html = bytes.decodeToString()
+                    .replace("&amp;", "&")
+                    .replace("\\/", "/")
+                val aspx = RE_ASPX.find(html)?.value
+                if (aspx != null && aspx != url) {
+                    hopped = true
+                    val second = fetch(aspx)
+                        ?: return "rebond aspx: redirection sans Location" to null
+                    code = second.first
+                    type = second.second
+                    bytes = second.third
                 }
-                break
             }
-            val code = conn.responseCode
-            val type = conn.contentType ?: "?"
-            conn.inputStream.use { input ->
-                val bytes = input.readBytes()
-                if (!bytes.decodeToString(0, 4.coerceAtMost(bytes.size))
-                        .startsWith("%PDF")
-                ) {
-                    "HTTP $code, $type : …${current.takeLast(60)}" to null
-                } else {
-                    val file = File.createTempFile("bdc_", ".pdf", context.cacheDir)
-                    file.writeBytes(bytes)
-                    "" to file
-                }
+
+            if (!isPdf(bytes)) {
+                val tag = if (hopped) "après rebond aspx, " else ""
+                "${tag}HTTP $code, $type : …${url.takeLast(50)}" to null
+            } else {
+                val file = File.createTempFile("bdc_", ".pdf", context.cacheDir)
+                file.writeBytes(bytes)
+                "" to file
             }
         } catch (e: Exception) {
             "${e.javaClass.simpleName}: ${e.message}" to null
