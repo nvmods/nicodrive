@@ -61,6 +61,18 @@ fun DriveScreen(
         }
     }
 
+    val launcher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isEmpty()) {
+            status = "Aucun fichier sélectionné."
+        } else {
+            uris.forEach { uri ->
+                viewModel.importDrivePdf(uri, context) { msg -> status = msg }
+            }
+        }
+    }
+
     fun syncFromMail() {
         val config = DriveMailSync.loadConfig(context)
         if (config == null) {
