@@ -26,8 +26,8 @@ object DriveMailSync {
             """apple\.com|google\.com|play\.google|mentions|cgv|contact""",
         RegexOption.IGNORE_CASE
     )
-    // Les deux graphies existent : bon-de-commande.aspx (bouton du mail)
-    // et bondecommande.aspx (lien direct).
+    // Les deux graphies existent : bon-de-commande.aspx (bouton du mail,
+    // chemin /rapport/) et bondecommande.aspx (téléchargement direct).
     private val RE_ASPX = Regex(
         """https?://[^\s"'<>\\]+bon-?de-?commande\.aspx[^\s"'<>\\]*""",
         RegexOption.IGNORE_CASE
@@ -85,7 +85,19 @@ object DriveMailSync {
             .replace("=3d", "=")
             .replace("&amp;", "&")
 
-    /** Liens candidats du mail, du plus prometteur au moins prometteur. */
+    /**
+     * Variante "téléchargement direct" d'une URL de bouton /rapport/ :
+     * mêmes tokens iIdC/dDtC, mais chemin direct qui renvoie le PDF
+     * (vérifié en navigation privée).
+     */
+    private fun directVariant(u: String): String? {
+        if (!RE_BDC.containsMatchIn(u)) return null
+        val direct = u.replace("/rapport/", "/")
+            .replace("bon-de-commande.aspx", "bondecommande.aspx", ignoreCase = true)
+        return if (direct != u) direct else null
+    }
+
+    /** Liens candidats du mail, variantes directes en tête. */
     private fun candidateLinks(body: String): List<String> {
         val all = RE_URL.findAll(body).map { it.value.trimEnd('.', ',', ';') }
             .distinct()
@@ -102,7 +114,10 @@ object DriveMailSync {
             if (u.contains("iIdC", true) || u.contains("dDtC", true)) s += 50
             return s
         }
-        return all.sortedByDescending { score(it) }
+        val sorted = all.sortedByDescending { score(it) }
+        // Les variantes directes dérivées passent devant tout le reste.
+        val variants = sorted.mapNotNull { directVariant(it) }
+        return (variants + sorted).distinct()
     }
 
     fun sync(context: Context, config: MailConfig, lookback: Int = 150): SyncReport {
@@ -146,7 +161,7 @@ object DriveMailSync {
 
                         val body = cleanBody(extractText(msg))
                         var found = false
-                        var lastFailure: String? = null
+                        var firstFailure: String? = null
                         for (link in candidateLinks(body).take(10)) {
                             tried++
                             val result = downloadPdf(context, link)
@@ -154,11 +169,11 @@ object DriveMailSync {
                                 pdfs.add(result.second!!)
                                 found = true
                                 break
-                            } else {
-                                lastFailure = result.first
+                            } else if (firstFailure == null) {
+                                firstFailure = result.first
                             }
                         }
-                        if (!found && lastFailure != null) failures.add(lastFailure)
+                        if (!found && firstFailure != null) failures.add(firstFailure)
                     }
                 }
             } finally {
@@ -228,16 +243,17 @@ object DriveMailSync {
                 ?: return "redirection sans Location" to null
 
             // Rebond : si on reçoit du HTML, y chercher le lien du bon de
-            // commande et le suivre.
+            // commande (ou sa variante directe) et le suivre.
             var hopped = false
             if (!isPdf(bytes) && type.contains("html", ignoreCase = true)) {
                 val html = bytes.decodeToString()
                     .replace("&amp;", "&")
                     .replace("\\/", "/")
                 val aspx = RE_ASPX.find(html)?.value
-                if (aspx != null && aspx != url) {
+                val target = aspx?.let { directVariant(it) ?: it }
+                if (target != null && target != url) {
                     hopped = true
-                    val second = fetch(aspx)
+                    val second = fetch(target)
                         ?: return "rebond aspx: redirection sans Location" to null
                     code = second.first
                     type = second.second
