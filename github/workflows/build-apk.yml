@@ -2,58 +2,107 @@ name: Build APK
 
 on:
   push:
-    branches: [ main ]
-  workflow_dispatch: {}
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
   build:
     runs-on: ubuntu-latest
+
     steps:
-      - uses: actions/checkout@v4
+      - name: Récupérer le dépôt
+        uses: actions/checkout@v4
 
-      - name: Extraire le projet du zip
-        run: unzip -o NicoBudget_v1.1_drive.zip
-
-      - name: Diagnostic de l'arborescence
+      - name: Vérifier la présence du ZIP
         run: |
-          echo "===== Racine du repo ====="
-          ls -la
-          echo "===== Dossier fixes ====="
-          ls -la fixes/ || echo "PAS DE DOSSIER fixes"
-          echo "===== Projet extrait ====="
-          ls -la NicoBudget/ NicoBudget/app/
+          test -f NicoBudget_v1.1_drive.zip || {
+            echo "::error::Le fichier NicoBudget_v1.1_drive.zip est introuvable"
+            exit 1
+          }
 
-      - name: Appliquer le build.gradle.kts corrige
+      - name: Extraire le projet
+        run: |
+          unzip -o NicoBudget_v1.1_drive.zip
+          echo "===== Contenu après extraction ====="
+          find . -maxdepth 3 -type f | sort | head -200
+
+      - name: Vérifier l'arborescence
+        run: |
+          test -d NicoBudget || {
+            echo "::error::Le dossier NicoBudget est introuvable après extraction"
+            exit 1
+          }
+
+          test -d NicoBudget/app || {
+            echo "::error::Le dossier NicoBudget/app est introuvable"
+            exit 1
+          }
+
+          test -f fixes/app-build.gradle.kts || {
+            echo "::error::Le correctif fixes/app-build.gradle.kts est introuvable"
+            exit 1
+          }
+
+      - name: Appliquer le build.gradle.kts corrigé
         run: |
           cp fixes/app-build.gradle.kts NicoBudget/app/build.gradle.kts
-          echo "===== Contenu applique ====="
+
+          echo "===== build.gradle.kts appliqué ====="
           cat NicoBudget/app/build.gradle.kts
 
-      - name: Tolerer l'ecart de cible JVM (warning au lieu d'erreur)
+      - name: Configurer Gradle
         run: |
-          echo "" >> NicoBudget/gradle.properties
-          echo "kotlin.jvm.target.validation.mode=warning" >> NicoBudget/gradle.properties
+          touch NicoBudget/gradle.properties
+
+          if ! grep -q "^kotlin.jvm.target.validation.mode=" NicoBudget/gradle.properties; then
+            echo "kotlin.jvm.target.validation.mode=warning" >> NicoBudget/gradle.properties
+          fi
+
           echo "===== gradle.properties ====="
           cat NicoBudget/gradle.properties
 
-      - name: JDK 17
+      - name: Installer Java 17
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: "17"
+          cache: gradle
 
-      - name: Gradle
+      - name: Configurer Gradle
         uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: '8.10.2'
 
-      - name: Build debug APK
-        run: gradle assembleDebug --no-daemon
+      - name: Rendre le wrapper exécutable
+        run: chmod +x gradlew
         working-directory: NicoBudget
+
+      - name: Afficher les versions
+        run: |
+          java -version
+          ./gradlew --version
+        working-directory: NicoBudget
+
+      - name: Compiler l'APK debug
+        run: ./gradlew clean assembleDebug --no-daemon --stacktrace
+        working-directory: NicoBudget
+
+      - name: Vérifier l'APK
+        run: |
+          echo "===== APK générés ====="
+          find NicoBudget/app/build/outputs/apk -type f -name "*.apk" -ls
+
+          test -f NicoBudget/app/build/outputs/apk/debug/app-debug.apk || {
+            echo "::error::L'APK debug n'a pas été généré"
+            exit 1
+          }
 
       - name: Publier l'APK
         uses: actions/upload-artifact@v4
         with:
           name: NicoBudget-debug-apk
           path: NicoBudget/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
           retention-days: 30
