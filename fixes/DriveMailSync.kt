@@ -18,11 +18,19 @@ import javax.mail.internet.MimeMultipart
 object DriveMailSync {
 
     private val RE_LINK = Regex(
-        """https://[^\s"'<>]*bondecommande\.aspx\?[^\s"'<>]+""",
+        """https://[^\s"'<>]*bondecommande[^\s"'<>]*""",
         RegexOption.IGNORE_CASE
     )
 
     data class MailConfig(val host: String, val user: String, val password: String)
+
+    data class SyncReport(
+        val mailsScanned: Int,
+        val leclercMails: Int,
+        val linksFound: Int,
+        val pdfs: List<File>,
+        val failures: List<String>
+    )
 
     private fun prefs(context: Context) = EncryptedSharedPreferences.create(
         context,
@@ -48,11 +56,6 @@ object DriveMailSync {
         return MailConfig(host, user, pass)
     }
 
-    /**
-     * Les fichiers META-INF/mailcap sont exclus de l'APK : on enregistre les
-     * décodeurs MIME de Jakarta Mail par code, sinon les mails multipart
-     * ressortent en flux brut (IMAPInputStream cannot be cast to Multipart).
-     */
     private fun ensureMailcap() {
         val mc = CommandMap.getDefaultCommandMap() as MailcapCommandMap
         mc.addMailcap("text/html;; x-java-content-handler=com.sun.mail.handlers.text_html")
@@ -63,7 +66,15 @@ object DriveMailSync {
         CommandMap.setDefaultCommandMap(mc)
     }
 
-    fun fetchOrderPdfs(context: Context, config: MailConfig, lookback: Int = 150): List<File> {
+    /** Répare un corps encore en quoted-printable (=3D, coupures =\r\n). */
+    private fun cleanBody(raw: String): String =
+        raw.replace("=\r\n", "")
+            .replace("=\n", "")
+            .replace("=3D", "=")
+            .replace("=3d", "=")
+            .replace("&amp;", "&")
+
+    fun sync(context: Context, config: MailConfig, lookback: Int = 150): SyncReport {
         ensureMailcap()
         val props = Properties().apply {
             put("mail.store.protocol", "imaps")
@@ -76,7 +87,12 @@ object DriveMailSync {
         }
         val session = Session.getInstance(props)
         val store = session.getStore("imaps")
+
+        var scanned = 0
+        var leclerc = 0
+        var links = 0
         val pdfs = mutableListOf<File>()
+        val failures = mutableListOf<String>()
 
         store.connect(config.host, config.user, config.password)
         try {
@@ -84,21 +100,30 @@ object DriveMailSync {
             inbox.open(Folder.READ_ONLY)
             try {
                 val count = inbox.messageCount
-                if (count == 0) return emptyList()
-                val start = (count - lookback + 1).coerceAtLeast(1)
-                val messages = inbox.getMessages(start, count)
+                if (count > 0) {
+                    val start = (count - lookback + 1).coerceAtLeast(1)
+                    val messages = inbox.getMessages(start, count)
+                    scanned = messages.size
 
-                for (msg in messages) {
-                    val from = msg.from?.joinToString { it.toString() }?.lowercase() ?: ""
-                    if (!from.contains("leclerc")) continue
+                    for (msg in messages) {
+                        val from = msg.from?.joinToString { it.toString() }
+                            ?.lowercase() ?: ""
+                        val subject = msg.subject?.lowercase() ?: ""
+                        if (!from.contains("leclerc") && !subject.contains("leclerc"))
+                            continue
+                        leclerc++
 
-                    val body = extractText(msg)
-                        .replace("&amp;", "&")
-                        .replace("=\r\n", "")
-                        .replace("=\n", "")
-                    val link = RE_LINK.find(body)?.value ?: continue
+                        val body = cleanBody(extractText(msg))
+                        val link = RE_LINK.find(body)?.value ?: continue
+                        links++
 
-                    downloadPdf(context, link)?.let { pdfs.add(it) }
+                        val result = downloadPdf(context, link)
+                        if (result.second != null) {
+                            pdfs.add(result.second!!)
+                        } else {
+                            failures.add(result.first)
+                        }
+                    }
                 }
             } finally {
                 inbox.close(false)
@@ -106,15 +131,13 @@ object DriveMailSync {
         } finally {
             store.close()
         }
-        return pdfs
+        return SyncReport(scanned, leclerc, links, pdfs, failures)
     }
 
     private fun extractText(part: Part): String = try {
         when {
             part.isMimeType("text/*") -> part.content?.toString() ?: ""
             part.isMimeType("multipart/*") -> {
-                // Repli si le décodeur n'est pas actif : reconstruire le
-                // multipart depuis la source brute.
                 val mp = (part.content as? Multipart)
                     ?: MimeMultipart(part.dataHandler.dataSource)
                 (0 until mp.count).joinToString("\n") { extractText(mp.getBodyPart(it)) }
@@ -122,8 +145,6 @@ object DriveMailSync {
             else -> ""
         }
     } catch (e: Exception) {
-        // Dernier recours : lecture brute du flux (suffisant pour y trouver
-        // une URL en clair).
         try {
             part.inputStream.bufferedReader().readText()
         } catch (e2: Exception) {
@@ -131,26 +152,33 @@ object DriveMailSync {
         }
     }
 
-    private fun downloadPdf(context: Context, url: String): File? {
+    /** Retourne (raison d'échec, fichier) — fichier null si échec. */
+    private fun downloadPdf(context: Context, url: String): Pair<String, File?> {
         return try {
             val conn = URL(url).openConnection() as HttpURLConnection
             conn.connectTimeout = 15000
             conn.readTimeout = 30000
+            conn.instanceFollowRedirects = true
             conn.setRequestProperty(
                 "User-Agent",
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36"
             )
+            val code = conn.responseCode
+            val type = conn.contentType ?: "?"
             conn.inputStream.use { input ->
                 val bytes = input.readBytes()
                 if (!bytes.decodeToString(0, 4.coerceAtMost(bytes.size))
                         .startsWith("%PDF")
-                ) return null
-                val file = File.createTempFile("bdc_", ".pdf", context.cacheDir)
-                file.writeBytes(bytes)
-                file
+                ) {
+                    "HTTP $code, type $type (pas un PDF) : ${url.take(80)}…" to null
+                } else {
+                    val file = File.createTempFile("bdc_", ".pdf", context.cacheDir)
+                    file.writeBytes(bytes)
+                    "" to file
+                }
             }
         } catch (e: Exception) {
-            null
+            "${e.javaClass.simpleName}: ${e.message}" to null
         }
     }
 }
