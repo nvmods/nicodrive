@@ -22,6 +22,15 @@ object DriveMailSync {
         RegexOption.IGNORE_CASE
     )
 
+    private val RE_IMAGE = Regex("""\.(png|jpe?g|gif|webp|svg)(\?|$)""", RegexOption.IGNORE_CASE)
+
+    /** Choisit le meilleur candidat : d'abord le .aspx, jamais une image. */
+    private fun pickOrderLink(body: String): String? {
+        val candidates = RE_LINK.findAll(body).map { it.value }.toList()
+        return candidates.firstOrNull { it.contains("bondecommande.aspx", ignoreCase = true) }
+            ?: candidates.firstOrNull { !RE_IMAGE.containsMatchIn(it) }
+    }
+
     data class MailConfig(val host: String, val user: String, val password: String)
 
     data class SyncReport(
@@ -114,7 +123,7 @@ object DriveMailSync {
                         leclerc++
 
                         val body = cleanBody(extractText(msg))
-                        val link = RE_LINK.find(body)?.value ?: continue
+                        val link = pickOrderLink(body) ?: continue
                         links++
 
                         val result = downloadPdf(context, link)
