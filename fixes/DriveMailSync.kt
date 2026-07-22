@@ -7,26 +7,20 @@ import java.io.File
 import java.net.HttpURLConnection
 import java.net.URL
 import java.util.Properties
+import javax.activation.CommandMap
+import javax.activation.MailcapCommandMap
 import javax.mail.Folder
-import javax.mail.Message
 import javax.mail.Multipart
 import javax.mail.Part
 import javax.mail.Session
+import javax.mail.internet.MimeMultipart
 
-/**
- * Synchronisation des commandes Leclerc Drive depuis la boîte mail (IMAP).
- * Cherche les mails Leclerc récents, extrait le lien du bon de commande,
- * télécharge le PDF dans le cache et le rend disponible pour import.
- * Tout est bloquant : à appeler depuis Dispatchers.IO uniquement.
- */
 object DriveMailSync {
 
     private val RE_LINK = Regex(
         """https://[^\s"'<>]*bondecommande\.aspx\?[^\s"'<>]+""",
         RegexOption.IGNORE_CASE
     )
-
-    // ---------------- Configuration (stockage chiffré) ----------------
 
     data class MailConfig(val host: String, val user: String, val password: String)
 
@@ -54,15 +48,23 @@ object DriveMailSync {
         return MailConfig(host, user, pass)
     }
 
-    // ---------------- Synchronisation ----------------
-
     /**
-     * Retourne les PDF téléchargés (fichiers en cache), un par mail Leclerc
-     * contenant un lien de bon de commande, parmi les [lookback] derniers
-     * mails de la boîte. Les doublons sont filtrés plus loin par l'import
-     * (idempotence sur le n° de commande).
+     * Les fichiers META-INF/mailcap sont exclus de l'APK : on enregistre les
+     * décodeurs MIME de Jakarta Mail par code, sinon les mails multipart
+     * ressortent en flux brut (IMAPInputStream cannot be cast to Multipart).
      */
+    private fun ensureMailcap() {
+        val mc = CommandMap.getDefaultCommandMap() as MailcapCommandMap
+        mc.addMailcap("text/html;; x-java-content-handler=com.sun.mail.handlers.text_html")
+        mc.addMailcap("text/xml;; x-java-content-handler=com.sun.mail.handlers.text_xml")
+        mc.addMailcap("text/plain;; x-java-content-handler=com.sun.mail.handlers.text_plain")
+        mc.addMailcap("multipart/*;; x-java-content-handler=com.sun.mail.handlers.multipart_mixed")
+        mc.addMailcap("message/rfc822;; x-java-content-handler=com.sun.mail.handlers.message_rfc822")
+        CommandMap.setDefaultCommandMap(mc)
+    }
+
     fun fetchOrderPdfs(context: Context, config: MailConfig, lookback: Int = 150): List<File> {
+        ensureMailcap()
         val props = Properties().apply {
             put("mail.store.protocol", "imaps")
             put("mail.imaps.host", config.host)
@@ -70,6 +72,7 @@ object DriveMailSync {
             put("mail.imaps.ssl.enable", "true")
             put("mail.imaps.connectiontimeout", "15000")
             put("mail.imaps.timeout", "30000")
+            put("mail.imaps.partialfetch", "false")
         }
         val session = Session.getInstance(props)
         val store = session.getStore("imaps")
@@ -106,13 +109,26 @@ object DriveMailSync {
         return pdfs
     }
 
-    private fun extractText(part: Part): String = when {
-        part.isMimeType("text/*") -> part.content?.toString() ?: ""
-        part.isMimeType("multipart/*") -> {
-            val mp = part.content as Multipart
-            (0 until mp.count).joinToString("\n") { extractText(mp.getBodyPart(it)) }
+    private fun extractText(part: Part): String = try {
+        when {
+            part.isMimeType("text/*") -> part.content?.toString() ?: ""
+            part.isMimeType("multipart/*") -> {
+                // Repli si le décodeur n'est pas actif : reconstruire le
+                // multipart depuis la source brute.
+                val mp = (part.content as? Multipart)
+                    ?: MimeMultipart(part.dataHandler.dataSource)
+                (0 until mp.count).joinToString("\n") { extractText(mp.getBodyPart(it)) }
+            }
+            else -> ""
         }
-        else -> ""
+    } catch (e: Exception) {
+        // Dernier recours : lecture brute du flux (suffisant pour y trouver
+        // une URL en clair).
+        try {
+            part.inputStream.bufferedReader().readText()
+        } catch (e2: Exception) {
+            ""
+        }
     }
 
     private fun downloadPdf(context: Context, url: String): File? {
@@ -128,7 +144,7 @@ object DriveMailSync {
                 val bytes = input.readBytes()
                 if (!bytes.decodeToString(0, 4.coerceAtMost(bytes.size))
                         .startsWith("%PDF")
-                ) return null   // lien expiré ou redirection login
+                ) return null
                 val file = File.createTempFile("bdc_", ".pdf", context.cacheDir)
                 file.writeBytes(bytes)
                 file
