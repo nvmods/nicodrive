@@ -75,6 +75,9 @@ jobs:
           cp fixes/AndroidManifest.xml NicoBudget/app/src/main/AndroidManifest.xml
           echo "===== Correctifs appliques ====="
           ls -la NicoBudget/app/src/main/java/com/example/nicobudget/drive/
+          sed -i "s/versionCode = 2/versionCode = ${{ github.run_number }}/" NicoBudget/app/build.gradle.kts
+          sed -i "s/versionName = \"1.1-drive\"/versionName = \"1.1-b${{ github.run_number }}\"/" NicoBudget/app/build.gradle.kts
+          
       - name: Configurer Gradle
         shell: bash
         run: |
