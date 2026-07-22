@@ -26,8 +26,6 @@ object DriveMailSync {
             """apple\.com|google\.com|play\.google|mentions|cgv|contact""",
         RegexOption.IGNORE_CASE
     )
-    // Les deux graphies existent : bon-de-commande.aspx (bouton du mail,
-    // chemin /rapport/) et bondecommande.aspx (téléchargement direct).
     private val RE_ASPX = Regex(
         """https?://[^\s"'<>\\]+bon-?de-?commande\.aspx[^\s"'<>\\]*""",
         RegexOption.IGNORE_CASE
@@ -85,11 +83,6 @@ object DriveMailSync {
             .replace("=3d", "=")
             .replace("&amp;", "&")
 
-    /**
-     * Variante "téléchargement direct" d'une URL de bouton /rapport/ :
-     * mêmes tokens iIdC/dDtC, mais chemin direct qui renvoie le PDF
-     * (vérifié en navigation privée).
-     */
     private fun directVariant(u: String): String? {
         if (!RE_BDC.containsMatchIn(u)) return null
         val direct = u.replace("/rapport/", "/")
@@ -97,7 +90,7 @@ object DriveMailSync {
         return if (direct != u) direct else null
     }
 
-    /** Liens candidats du mail, variantes directes en tête. */
+    /** Liens candidats du mail, le bouton bon-de-commande en tête. */
     private fun candidateLinks(body: String): List<String> {
         val all = RE_URL.findAll(body).map { it.value.trimEnd('.', ',', ';') }
             .distinct()
@@ -114,10 +107,7 @@ object DriveMailSync {
             if (u.contains("iIdC", true) || u.contains("dDtC", true)) s += 50
             return s
         }
-        val sorted = all.sortedByDescending { score(it) }
-        // Les variantes directes dérivées passent devant tout le reste.
-        val variants = sorted.mapNotNull { directVariant(it) }
-        return (variants + sorted).distinct()
+        return all.sortedByDescending { score(it) }
     }
 
     fun sync(context: Context, config: MailConfig, lookback: Int = 150): SyncReport {
@@ -203,8 +193,34 @@ object DriveMailSync {
         }
     }
 
-    /** GET avec suivi de redirections (y compris http<->https). */
-    private fun fetch(url: String): Triple<Int, String, ByteArray>? {
+    /** Réponse HTTP : code, type, corps, cookies posés, URL finale. */
+    private data class HttpResult(
+        val code: Int,
+        val type: String,
+        val bytes: ByteArray,
+        val finalUrl: String
+    )
+
+    /** Jar de cookies minimal, partagé au sein d'une même tentative. */
+    private class CookieJar {
+        private val cookies = LinkedHashMap<String, String>()
+        fun absorb(conn: HttpURLConnection) {
+            conn.headerFields.entries
+                .filter { it.key.equals("Set-Cookie", ignoreCase = true) }
+                .flatMap { it.value }
+                .forEach { raw ->
+                    val pair = raw.substringBefore(';')
+                    val name = pair.substringBefore('=').trim()
+                    val value = pair.substringAfter('=', "").trim()
+                    if (name.isNotEmpty()) cookies[name] = value
+                }
+        }
+        fun header(): String? =
+            if (cookies.isEmpty()) null
+            else cookies.entries.joinToString("; ") { "${it.key}=${it.value}" }
+    }
+
+    private fun fetch(url: String, jar: CookieJar, referer: String? = null): HttpResult? {
         var current = url
         var hops = 0
         while (true) {
@@ -214,9 +230,20 @@ object DriveMailSync {
             conn.instanceFollowRedirects = false
             conn.setRequestProperty(
                 "User-Agent",
-                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36"
+                "Mozilla/5.0 (Linux; Android 14; Pixel 7) AppleWebKit/537.36 " +
+                    "(KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
             )
+            conn.setRequestProperty(
+                "Accept",
+                "text/html,application/xhtml+xml,application/xml;q=0.9," +
+                    "application/pdf,image/avif,image/webp,*/*;q=0.8"
+            )
+            conn.setRequestProperty("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.5")
+            referer?.let { conn.setRequestProperty("Referer", it) }
+            jar.header()?.let { conn.setRequestProperty("Cookie", it) }
+
             val code = conn.responseCode
+            jar.absorb(conn)
             if (code in 300..399 && hops < 8) {
                 val loc = conn.getHeaderField("Location") ?: return null
                 current = if (loc.startsWith("http")) loc
@@ -230,43 +257,58 @@ object DriveMailSync {
             } catch (e: Exception) {
                 conn.errorStream?.use { it.readBytes() } ?: ByteArray(0)
             }
-            return Triple(code, type, bytes)
+            return HttpResult(code, type, bytes, current)
         }
     }
 
     private fun isPdf(bytes: ByteArray): Boolean =
         bytes.size >= 4 && bytes.decodeToString(0, 4).startsWith("%PDF")
 
+    /**
+     * Reproduit le parcours navigateur : ouvre l'URL du mail (la page
+     * /rapport/ pose ses cookies), puis suit vers le PDF avec ces cookies
+     * et le bon Referer.
+     */
     private fun downloadPdf(context: Context, url: String): Pair<String, File?> {
         return try {
-            var (code, type, bytes) = fetch(url)
+            val jar = CookieJar()
+
+            // 1) Requête initiale (URL du mail telle quelle)
+            var res = fetch(url, jar)
                 ?: return "redirection sans Location" to null
 
-            // Rebond : si on reçoit du HTML, y chercher le lien du bon de
-            // commande (ou sa variante directe) et le suivre.
-            var hopped = false
-            if (!isPdf(bytes) && type.contains("html", ignoreCase = true)) {
-                val html = bytes.decodeToString()
-                    .replace("&amp;", "&")
-                    .replace("\\/", "/")
-                val aspx = RE_ASPX.find(html)?.value
-                val target = aspx?.let { directVariant(it) ?: it }
-                if (target != null && target != url) {
-                    hopped = true
-                    val second = fetch(target)
-                        ?: return "rebond aspx: redirection sans Location" to null
-                    code = second.first
-                    type = second.second
-                    bytes = second.third
+            // 2) Si HTML : chercher un lien bon de commande dans la page,
+            //    sinon dériver la variante directe de l'URL — et suivre
+            //    avec cookies + Referer.
+            if (!isPdf(res.bytes)) {
+                val nextTargets = mutableListOf<String>()
+                if (res.type.contains("html", ignoreCase = true)) {
+                    val html = res.bytes.decodeToString()
+                        .replace("&amp;", "&")
+                        .replace("\\/", "/")
+                    RE_ASPX.find(html)?.value?.let {
+                        nextTargets.add(it)
+                        directVariant(it)?.let { d -> nextTargets.add(d) }
+                    }
+                }
+                directVariant(url)?.let { nextTargets.add(it) }
+
+                for (target in nextTargets.distinct()) {
+                    if (target == res.finalUrl) continue
+                    val second = fetch(target, jar, referer = res.finalUrl) ?: continue
+                    if (isPdf(second.bytes)) {
+                        res = second
+                        break
+                    }
+                    res = second
                 }
             }
 
-            if (!isPdf(bytes)) {
-                val tag = if (hopped) "après rebond aspx, " else ""
-                "${tag}HTTP $code, $type : …${url.takeLast(50)}" to null
+            if (!isPdf(res.bytes)) {
+                "HTTP ${res.code}, ${res.type} : …${res.finalUrl.takeLast(50)}" to null
             } else {
                 val file = File.createTempFile("bdc_", ".pdf", context.cacheDir)
-                file.writeBytes(bytes)
+                file.writeBytes(res.bytes)
                 "" to file
             }
         } catch (e: Exception) {
