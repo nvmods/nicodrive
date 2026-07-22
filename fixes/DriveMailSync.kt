@@ -17,26 +17,22 @@ import javax.mail.internet.MimeMultipart
 
 object DriveMailSync {
 
-    private val RE_LINK = Regex(
-        """https://[^\s"'<>]*bondecommande[^\s"'<>]*""",
+    private val RE_URL = Regex("""https?://[^\s"'<>)\]]+""", RegexOption.IGNORE_CASE)
+    private val RE_IMAGE = Regex(
+        """\.(png|jpe?g|gif|webp|svg|ico)(\?|$)""", RegexOption.IGNORE_CASE
+    )
+    private val RE_JUNK = Regex(
+        """unsubscribe|desinscri|desabonn|facebook|instagram|twitter|youtube|""" +
+            """apple\.com|google\.com|play\.google|mentions|cgv|contact""",
         RegexOption.IGNORE_CASE
     )
-
-    private val RE_IMAGE = Regex("""\.(png|jpe?g|gif|webp|svg)(\?|$)""", RegexOption.IGNORE_CASE)
-
-    /** Choisit le meilleur candidat : d'abord le .aspx, jamais une image. */
-    private fun pickOrderLink(body: String): String? {
-        val candidates = RE_LINK.findAll(body).map { it.value }.toList()
-        return candidates.firstOrNull { it.contains("bondecommande.aspx", ignoreCase = true) }
-            ?: candidates.firstOrNull { !RE_IMAGE.containsMatchIn(it) }
-    }
 
     data class MailConfig(val host: String, val user: String, val password: String)
 
     data class SyncReport(
         val mailsScanned: Int,
         val leclercMails: Int,
-        val linksFound: Int,
+        val linksTried: Int,
         val pdfs: List<File>,
         val failures: List<String>
     )
@@ -75,13 +71,35 @@ object DriveMailSync {
         CommandMap.setDefaultCommandMap(mc)
     }
 
-    /** Répare un corps encore en quoted-printable (=3D, coupures =\r\n). */
     private fun cleanBody(raw: String): String =
         raw.replace("=\r\n", "")
             .replace("=\n", "")
             .replace("=3D", "=")
             .replace("=3d", "=")
             .replace("&amp;", "&")
+
+    /**
+     * Tous les liens candidats du mail, du plus prometteur au moins
+     * prometteur. Le vrai lien du bouton est souvent un tracker sans mot-clé,
+     * donc on garde tout ce qui n'est pas image/junk et on essaiera dans
+     * l'ordre.
+     */
+    private fun candidateLinks(body: String): List<String> {
+        val all = RE_URL.findAll(body).map { it.value.trimEnd('.', ',', ';') }
+            .distinct()
+            .filter { !RE_IMAGE.containsMatchIn(it) && !RE_JUNK.containsMatchIn(it) }
+            .toList()
+        fun score(u: String): Int {
+            var s = 0
+            if (u.contains("bondecommande.aspx", true)) s += 100
+            if (u.contains("bondecommande", true)) s += 40
+            if (u.contains("commande", true)) s += 20
+            if (u.contains("leclercdrive", true)) s += 10
+            if (u.contains("iIdC", true) || u.contains("dDtC", true)) s += 50
+            return s
+        }
+        return all.sortedByDescending { score(it) }
+    }
 
     fun sync(context: Context, config: MailConfig, lookback: Int = 150): SyncReport {
         ensureMailcap()
@@ -99,7 +117,7 @@ object DriveMailSync {
 
         var scanned = 0
         var leclerc = 0
-        var links = 0
+        var tried = 0
         val pdfs = mutableListOf<File>()
         val failures = mutableListOf<String>()
 
@@ -123,15 +141,20 @@ object DriveMailSync {
                         leclerc++
 
                         val body = cleanBody(extractText(msg))
-                        val link = pickOrderLink(body) ?: continue
-                        links++
-
-                        val result = downloadPdf(context, link)
-                        if (result.second != null) {
-                            pdfs.add(result.second!!)
-                        } else {
-                            failures.add(result.first)
+                        var found = false
+                        var lastFailure: String? = null
+                        for (link in candidateLinks(body).take(10)) {
+                            tried++
+                            val result = downloadPdf(context, link)
+                            if (result.second != null) {
+                                pdfs.add(result.second!!)
+                                found = true
+                                break
+                            } else {
+                                lastFailure = result.first
+                            }
                         }
+                        if (!found && lastFailure != null) failures.add(lastFailure)
                     }
                 }
             } finally {
@@ -140,7 +163,7 @@ object DriveMailSync {
         } finally {
             store.close()
         }
-        return SyncReport(scanned, leclerc, links, pdfs, failures)
+        return SyncReport(scanned, leclerc, tried, pdfs, failures)
     }
 
     private fun extractText(part: Part): String = try {
@@ -161,17 +184,34 @@ object DriveMailSync {
         }
     }
 
-    /** Retourne (raison d'échec, fichier) — fichier null si échec. */
+    /**
+     * Télécharge en suivant les redirections, y compris les changements de
+     * protocole http<->https que HttpURLConnection ne suit pas tout seul.
+     */
     private fun downloadPdf(context: Context, url: String): Pair<String, File?> {
         return try {
-            val conn = URL(url).openConnection() as HttpURLConnection
-            conn.connectTimeout = 15000
-            conn.readTimeout = 30000
-            conn.instanceFollowRedirects = true
-            conn.setRequestProperty(
-                "User-Agent",
-                "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36"
-            )
+            var current = url
+            var conn: HttpURLConnection
+            var hops = 0
+            while (true) {
+                conn = URL(current).openConnection() as HttpURLConnection
+                conn.connectTimeout = 15000
+                conn.readTimeout = 30000
+                conn.instanceFollowRedirects = false
+                conn.setRequestProperty(
+                    "User-Agent",
+                    "Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 Chrome/126 Mobile Safari/537.36"
+                )
+                val code = conn.responseCode
+                if (code in 300..399 && hops < 8) {
+                    val loc = conn.getHeaderField("Location") ?: break
+                    current = if (loc.startsWith("http")) loc
+                    else URL(URL(current), loc).toString()
+                    hops++
+                    continue
+                }
+                break
+            }
             val code = conn.responseCode
             val type = conn.contentType ?: "?"
             conn.inputStream.use { input ->
@@ -179,7 +219,7 @@ object DriveMailSync {
                 if (!bytes.decodeToString(0, 4.coerceAtMost(bytes.size))
                         .startsWith("%PDF")
                 ) {
-                    "HTTP $code, type $type (pas un PDF) : ${url.take(80)}…" to null
+                    "HTTP $code, $type : …${current.takeLast(60)}" to null
                 } else {
                     val file = File.createTempFile("bdc_", ".pdf", context.cacheDir)
                     file.writeBytes(bytes)
