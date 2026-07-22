@@ -68,7 +68,9 @@ jobs:
           cat NicoBudget/app/build.gradle.kts
       - name: Appliquer le parser corrige
         run: cp fixes/LeclercPdfParser.kt NicoBudget/app/src/main/java/com/example/nicobudget/drive/LeclercPdfParser.kt
-
+             cp fixes/DriveMailSync.kt NicoBudget/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt
+          cp fixes/DriveScreen.kt NicoBudget/app/src/main/java/com/example/nicobudget/ui/DriveScreen.kt
+          cp fixes/AndroidManifest.xml NicoBudget/app/src/main/AndroidManifest.xml
       - name: Configurer Gradle
         shell: bash
         run: |
