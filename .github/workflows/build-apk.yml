@@ -66,11 +66,15 @@ jobs:
 
           echo "===== build.gradle.kts utilisé ====="
           cat NicoBudget/app/build.gradle.kts
-      - name: Appliquer le parser corrige
-        run: cp fixes/LeclercPdfParser.kt NicoBudget/app/src/main/java/com/example/nicobudget/drive/LeclercPdfParser.kt
-             cp fixes/DriveMailSync.kt NicoBudget/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt
+      - name: Appliquer les correctifs
+        run: |
+          cp fixes/app-build.gradle.kts NicoBudget/app/build.gradle.kts
+          cp fixes/LeclercPdfParser.kt NicoBudget/app/src/main/java/com/example/nicobudget/drive/LeclercPdfParser.kt
+          cp fixes/DriveMailSync.kt NicoBudget/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt
           cp fixes/DriveScreen.kt NicoBudget/app/src/main/java/com/example/nicobudget/ui/DriveScreen.kt
           cp fixes/AndroidManifest.xml NicoBudget/app/src/main/AndroidManifest.xml
+          echo "===== Correctifs appliques ====="
+          ls -la NicoBudget/app/src/main/java/com/example/nicobudget/drive/
       - name: Configurer Gradle
         shell: bash
         run: |
