@@ -11,7 +11,33 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Extraire le zip du projet
+        run: |
+          echo "===== Racine du repo ====="
+          ls -la
+          ZIP=$(ls *.zip | head -1)
+          if [ -z "$ZIP" ]; then
+            echo "ERREUR : aucun zip trouvé à la racine du repo."
+            exit 1
+          fi
+          echo "Extraction de : $ZIP"
+          unzip -o -q "$ZIP" -d projet
+
+      - name: Localiser le projet
+        id: locate
+        run: |
+          SETTINGS=$(find projet -maxdepth 3 -name "settings.gradle.kts" -not -path "*/build/*" | head -1)
+          if [ -z "$SETTINGS" ]; then
+            echo "ERREUR : settings.gradle.kts introuvable dans le zip."
+            find projet -maxdepth 2 -type d
+            exit 1
+          fi
+          DIR=$(dirname "$SETTINGS")
+          echo "Projet trouvé dans : $DIR"
+          echo "dir=$DIR" >> "$GITHUB_OUTPUT"
+
       - name: Numero de version unique par build
+        working-directory: ${{ steps.locate.outputs.dir }}
         run: |
           sed -i "s/versionCode = 100/versionCode = ${{ github.run_number }}/" app/build.gradle.kts
           sed -i "s/versionName = \"1.2-drive\"/versionName = \"1.2-b${{ github.run_number }}\"/" app/build.gradle.kts
@@ -30,6 +56,7 @@ jobs:
 
       - name: Build debug APK
         shell: bash
+        working-directory: ${{ steps.locate.outputs.dir }}
         run: |
           set +e
           set -o pipefail
@@ -44,5 +71,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: NicoBudget-debug-apk
-          path: app/build/outputs/apk/debug/app-debug.apk
+          path: ${{ steps.locate.outputs.dir }}/app/build/outputs/apk/debug/app-debug.apk
           retention-days: 30
