@@ -1,0 +1,26 @@
+name: Diagnose Stats
+
+on:
+  push:
+    branches: [ main ]
+
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspecter les sources statistiques
+        shell: bash
+        run: |
+          set -e
+          ZIP=$(ls *.zip | head -1)
+          unzip -o -q "$ZIP" -d projet
+          echo "===== FICHIERS AVEC STATS / SAVINGS / TICKET ====="
+          grep -RIlE 'Dépenses Drive par mois|ticketLeclerc|savings|drive_orders|SUM\(total\)|économis|economis' projet/app/src/main/java || true
+          echo "===== OCCURRENCES ====="
+          grep -RInE 'Dépenses Drive par mois|ticketLeclerc|savings|drive_orders|SUM\(total\)|économis|economis' projet/app/src/main/java || true
+          echo "===== SOURCES CANDIDATES ====="
+          while IFS= read -r f; do
+            echo "----- $f -----"
+            sed -n '1,420p' "$f"
+          done < <(grep -RIlE 'Dépenses Drive par mois|ticketLeclerc|savings|drive_orders|SUM\(total\)|économis|economis' projet/app/src/main/java || true)
