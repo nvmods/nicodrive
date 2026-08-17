@@ -20,7 +20,13 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import com.example.nicobudget.drive.DriveMailSync
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
+import java.net.HttpURLConnection
 import java.net.URI
+import java.net.URL
 
 /**
  * Connexion interactive E.Leclerc.
@@ -29,25 +35,26 @@ import java.net.URI
  * identifiants E.Leclerc : il réutilise uniquement la session/cookies créés
  * par le WebView après la connexion.
  *
- * Important : après "Session prête", on ne ferme plus immédiatement le
- * navigateur. On recharge d'abord le lien du bon dans LE MÊME WebView afin
- * que le SSO puisse déposer les cookies du domaine Drive. C'est seulement
- * quand le bon est réellement atteint (ou qu'un PDF est proposé) que la
- * session est validée et transmise à DriveMailSync.
+ * Depuis b64, le PDF n'est plus récupéré en relançant ensuite le lien du mail
+ * avec une nouvelle session HTTP. Quand le WebView authentifié déclenche le
+ * téléchargement du bon, on récupère immédiatement CETTE URL finale avec les
+ * cookies et le User-Agent exacts du WebView. C'est important car certains
+ * anciens bons semblent être protégés individuellement.
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun LeclercSessionDialog(
     initialUrl: String,
     onDismiss: () -> Unit,
-    onSessionSaved: () -> Unit
+    onPdfCaptured: (File) -> Unit
 ) {
+    val scope = rememberCoroutineScope()
     var currentUrl by remember(initialUrl) { mutableStateOf(initialUrl) }
     var loading by remember { mutableStateOf(true) }
     var message by remember { mutableStateOf<String?>(null) }
     var webView by remember { mutableStateOf<WebView?>(null) }
     var verifyingTarget by remember { mutableStateOf(false) }
-    var sessionSubmitted by remember { mutableStateOf(false) }
+    var capturingPdf by remember { mutableStateOf(false) }
 
     val initialHost = remember(initialUrl) {
         try {
@@ -92,23 +99,9 @@ fun LeclercSessionDialog(
         }
     }
 
-    fun finishSession(view: WebView, sessionUrl: String = currentUrl) {
-        if (sessionSubmitted) return
-        sessionSubmitted = true
-        verifyingTarget = false
-        loading = false
-        if (persistSession(view, sessionUrl)) {
-            onSessionSaved()
-        } else {
-            sessionSubmitted = false
-            message = "Le bon est accessible, mais aucun cookie de session n'a été trouvé."
-        }
-    }
-
     fun verifySessionOnTarget(view: WebView) {
-        if (sessionSubmitted) return
+        if (capturingPdf) return
 
-        // Sauvegarde d'abord la session du domaine de connexion/SSO courant.
         if (!persistSession(view)) {
             message = "Aucun cookie de session détecté. Termine d'abord la connexion E.Leclerc."
             loading = false
@@ -117,11 +110,102 @@ fun LeclercSessionDialog(
 
         verifyingTarget = true
         loading = true
-        message = "Connexion détectée. Vérification du bon de commande…"
-
-        // Étape essentielle : repasser par le lien d'origine dans le WebView
-        // authentifié pour laisser E.Leclerc poser les cookies du domaine Drive.
+        message = "Connexion détectée. Ouverture du bon dans la session authentifiée…"
         view.loadUrl(initialUrl)
+    }
+
+    fun capturePdfFromDownload(
+        view: WebView,
+        downloadUrl: String,
+        mimeType: String?
+    ) {
+        if (capturingPdf) return
+        if (!downloadUrl.startsWith("http", ignoreCase = true)) {
+            loading = false
+            message = "Leclerc a proposé un téléchargement ${downloadUrl.substringBefore(':')} non récupérable directement."
+            return
+        }
+
+        val cookieManager = CookieManager.getInstance()
+        cookieManager.flush()
+        val cookieHeader = cookieManager.getCookie(downloadUrl).orEmpty()
+        val userAgent = view.settings.userAgentString.orEmpty()
+        val referer = currentUrl.takeIf { it.startsWith("http", ignoreCase = true) }
+        val appContext = view.context.applicationContext
+
+        // Sauvegarde également les cookies du domaine exact qui propose le PDF.
+        DriveMailSync.saveBrowserSession(
+            context = appContext,
+            originalUrl = initialUrl,
+            currentUrl = downloadUrl,
+            originalCookies = cookieManager.getCookie(initialUrl),
+            currentCookies = cookieHeader,
+            userAgent = userAgent
+        )
+
+        capturingPdf = true
+        verifyingTarget = false
+        loading = true
+        message = "Bon accessible dans le navigateur. Récupération du PDF…"
+
+        scope.launch {
+            val result = withContext(Dispatchers.IO) {
+                try {
+                    val conn = URL(downloadUrl).openConnection() as HttpURLConnection
+                    conn.connectTimeout = 15000
+                    conn.readTimeout = 30000
+                    conn.instanceFollowRedirects = true
+                    conn.useCaches = false
+                    conn.requestMethod = "GET"
+                    if (userAgent.isNotBlank()) {
+                        conn.setRequestProperty("User-Agent", userAgent)
+                    }
+                    if (cookieHeader.isNotBlank()) {
+                        conn.setRequestProperty("Cookie", cookieHeader)
+                    }
+                    if (!referer.isNullOrBlank() && referer != downloadUrl) {
+                        conn.setRequestProperty("Referer", referer)
+                    }
+                    conn.setRequestProperty("Accept", "application/pdf,*/*;q=0.9")
+                    conn.setRequestProperty("Accept-Language", "fr-FR,fr;q=0.9,en;q=0.5")
+                    conn.setRequestProperty("Sec-Fetch-Mode", "navigate")
+                    conn.setRequestProperty("Sec-Fetch-Dest", "document")
+
+                    val code = conn.responseCode
+                    val type = conn.contentType.orEmpty()
+                    val bytes = try {
+                        conn.inputStream.use { it.readBytes() }
+                    } catch (_: Exception) {
+                        conn.errorStream?.use { it.readBytes() } ?: ByteArray(0)
+                    }
+                    conn.disconnect()
+
+                    val isPdf = bytes.size >= 4 &&
+                        bytes.decodeToString(0, 4).startsWith("%PDF")
+                    if (code in 200..299 && isPdf) {
+                        val file = File.createTempFile("bdc_web_", ".pdf", appContext.cacheDir)
+                        file.writeBytes(bytes)
+                        file to null
+                    } else {
+                        null to "Téléchargement navigateur refusé : HTTP $code, ${type.ifBlank { mimeType ?: "type inconnu" }}."
+                    }
+                } catch (e: Exception) {
+                    null to "Erreur récupération PDF : ${e.javaClass.simpleName}: ${e.message}"
+                }
+            }
+
+            val file = result.first
+            if (file != null) {
+                loading = false
+                capturingPdf = false
+                message = "PDF récupéré. Import dans NicoBudget…"
+                onPdfCaptured(file)
+            } else {
+                loading = false
+                capturingPdf = false
+                message = result.second
+            }
+        }
     }
 
     DisposableEffect(Unit) {
@@ -178,7 +262,7 @@ fun LeclercSessionDialog(
 
                             view.webChromeClient = object : WebChromeClient() {
                                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                    if (newProgress >= 100 && !verifyingTarget) {
+                                    if (newProgress >= 100 && !capturingPdf) {
                                         loading = false
                                     }
                                 }
@@ -192,25 +276,23 @@ fun LeclercSessionDialog(
                                 ) {
                                     url?.let { currentUrl = it }
                                     loading = true
-                                    if (!verifyingTarget) message = null
+                                    if (!verifyingTarget && !capturingPdf) message = null
                                 }
 
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     url?.let { currentUrl = it }
                                     val currentView = view ?: return
 
-                                    // Toujours mémoriser les cookies gagnés au fil des
-                                    // redirections SSO, sans fermer prématurément le dialogue.
                                     persistSession(currentView, url ?: currentUrl)
+                                    loading = false
 
                                     if (verifyingTarget && isTargetLike(url)) {
-                                        finishSession(currentView, url ?: currentUrl)
-                                    } else {
-                                        loading = false
-                                        if (verifyingTarget) {
-                                            message = "Leclerc n'a pas encore rouvert le bon. " +
-                                                "Si la page demande encore une connexion/reCAPTCHA, termine-la puis retouche « Vérifier le bon »."
-                                        }
+                                        verifyingTarget = false
+                                        message = "Le bon est ouvert dans la session E.Leclerc. " +
+                                            "S'il y a un bouton PDF/Télécharger dans la page, touche-le : NicoBudget capturera directement le fichier."
+                                    } else if (verifyingTarget) {
+                                        message = "Leclerc n'a pas encore ouvert le bon. " +
+                                            "Si une connexion ou un reCAPTCHA est demandé, termine-le puis retouche « Vérifier le bon »."
                                     }
                                 }
 
@@ -222,7 +304,6 @@ fun LeclercSessionDialog(
                                     if (request?.isForMainFrame == true) {
                                         loading = false
                                         verifyingTarget = false
-                                        sessionSubmitted = false
                                         message = "E.Leclerc a répondu HTTP ${errorResponse?.statusCode ?: "?"}. " +
                                             "La session n'est pas encore utilisable pour ce bon."
                                     }
@@ -237,21 +318,17 @@ fun LeclercSessionDialog(
                                 ) {
                                     loading = false
                                     verifyingTarget = false
-                                    sessionSubmitted = false
                                     message = "Erreur de chargement : ${description ?: "inconnue"}"
                                 }
                             }
 
-                            // Un PDF proposé au WebView prouve que le navigateur authentifié
-                            // a réellement franchi la protection du bon de commande.
+                            // C'est ici que l'on obtient l'URL réellement autorisée par la
+                            // session WebView. On ne la jette plus pour rescanner le mail :
+                            // on tente immédiatement de récupérer ce PDF précis.
                             view.setDownloadListener { url, _, _, mimeType, _ ->
-                                if (!url.isNullOrBlank()) currentUrl = url
-                                loading = false
-                                if (
-                                    mimeType?.contains("pdf", ignoreCase = true) == true ||
-                                    url?.contains("bon", ignoreCase = true) == true
-                                ) {
-                                    finishSession(view, url ?: currentUrl)
+                                if (!url.isNullOrBlank()) {
+                                    currentUrl = url
+                                    capturePdfFromDownload(view, url, mimeType)
                                 }
                             }
 
@@ -280,13 +357,15 @@ fun LeclercSessionDialog(
                                 "Connexion E.Leclerc",
                                 style = MaterialTheme.typography.titleMedium
                             )
-                            TextButton(onClick = onDismiss) { Text("Fermer") }
+                            TextButton(onClick = onDismiss, enabled = !capturingPdf) {
+                                Text("Fermer")
+                            }
                         }
                         Text(
-                            if (verifyingTarget) {
-                                "Vérification du lien du bon dans la session authentifiée…"
-                            } else {
-                                "Connecte-toi et valide le reCAPTCHA, puis touche « Vérifier le bon »."
+                            when {
+                                capturingPdf -> "Récupération du bon depuis la session navigateur…"
+                                verifyingTarget -> "Ouverture du lien du bon dans la session authentifiée…"
+                                else -> "Connecte-toi et valide le reCAPTCHA si nécessaire, puis touche « Vérifier le bon »."
                             },
                             style = MaterialTheme.typography.bodySmall
                         )
@@ -307,7 +386,7 @@ fun LeclercSessionDialog(
                         message?.let {
                             Text(
                                 it,
-                                color = if (verifyingTarget) {
+                                color = if (verifyingTarget || capturingPdf) {
                                     MaterialTheme.colorScheme.primary
                                 } else {
                                     MaterialTheme.colorScheme.error
@@ -324,13 +403,13 @@ fun LeclercSessionDialog(
                             OutlinedButton(
                                 modifier = Modifier.weight(1f),
                                 onClick = { webView?.goBack() },
-                                enabled = webView?.canGoBack() == true && !sessionSubmitted
+                                enabled = webView?.canGoBack() == true && !capturingPdf
                             ) {
                                 Text("Retour")
                             }
                             Button(
                                 modifier = Modifier.weight(1f),
-                                enabled = !sessionSubmitted,
+                                enabled = !capturingPdf,
                                 onClick = {
                                     val view = webView
                                     if (view == null) {
@@ -342,7 +421,7 @@ fun LeclercSessionDialog(
                             ) {
                                 Text(
                                     when {
-                                        sessionSubmitted -> "Validation…"
+                                        capturingPdf -> "Récupération…"
                                         verifyingTarget -> "Retester le bon"
                                         else -> "Vérifier le bon"
                                     }
@@ -369,7 +448,10 @@ fun LeclercSessionDialog(
                                 modifier = Modifier.size(18.dp),
                                 strokeWidth = 2.dp
                             )
-                            Text("Chargement…", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                if (capturingPdf) "Récupération du PDF…" else "Chargement…",
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
                     }
                 }
