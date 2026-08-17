@@ -51,9 +51,9 @@ jobs:
           cp fixes/DriveMailSync.kt "$SYNC_TARGET"
           cp fixes/LeclercSessionDialog.kt "$SESSION_TARGET"
 
-          # La session WebView est la source la plus fidèle après le reCAPTCHA.
-          # On garde les cookies chiffrés en secours, mais le téléchargement HTTP
-          # consulte aussi directement le CookieManager Android du WebView.
+          # Le téléchargement HTTP historique continue de consulter les cookies du
+          # WebView. En plus, lorsqu'un PDF est réellement proposé par le WebView,
+          # on mémorise le lien du mail comme traité afin de passer au bon suivant.
           python3 - "$SYNC_TARGET" <<'PY'
           from pathlib import Path
           import re
@@ -101,6 +101,22 @@ jobs:
               if count != 1:
                   raise SystemExit('Bloc Cookie HTTP introuvable')
 
+          if 'fun markBrowserLinkProcessed(' not in text:
+              marker = '    private fun ensureMailcap() {'
+              helper = '''    fun markBrowserLinkProcessed(context: Context, originalUrl: String) {
+              val processedLinks = loadKeySet(context, PREF_PROCESSED_LINKS)
+              markLinkProcessed(
+                  context,
+                  processedLinks,
+                  normalizeLinkForKey(originalUrl)
+              )
+          }
+
+          '''
+              if marker not in text:
+                  raise SystemExit('Point insertion markBrowserLinkProcessed introuvable')
+              text = text.replace(marker, helper + marker, 1)
+
           path.write_text(text, encoding="utf-8")
           PY
 
@@ -130,13 +146,6 @@ jobs:
                   1
               )
 
-          old_fun = '    fun syncFromMail() {\n'
-          new_fun = '    fun syncFromMail(afterLeclercLogin: Boolean = false) {\n'
-          if old_fun in text:
-              text = text.replace(old_fun, new_fun, 1)
-          elif new_fun not in text:
-              raise SystemExit('Fonction syncFromMail introuvable')
-
           old_call = '                    DriveMailSync.sync(context, config)'
           new_call = '                    DriveMailSync.sync(context, config, includeHistorical = true)'
           if old_call in text:
@@ -147,40 +156,29 @@ jobs:
           status_marker = '                status = "${report.mailsScanned} mails scannés, " +\n'
           auth_assignment = '''                if (report.authRequiredUrl != null) {
               leclercRetryUrl = report.authRequiredUrl
+              leclercAuthUrl = report.authRequiredUrl
           } else if (report.pdfs.isNotEmpty()) {
               leclercRetryUrl = null
           }
-          // Après une connexion WebView on ne rouvre jamais automatiquement
-          // la fenêtre si Leclerc refuse encore la requête HTTP : cela évite
-          // la boucle connexion -> reprise -> connexion. Le retry manuel reste disponible.
-          leclercAuthUrl = if (afterLeclercLogin) null else report.authRequiredUrl
           '''
-          if 'leclercRetryUrl = report.authRequiredUrl' not in text:
+          if 'leclercAuthUrl = report.authRequiredUrl' not in text:
               if status_marker not in text:
                   raise SystemExit('Point insertion rapport Leclerc introuvable')
               text = text.replace(status_marker, auth_assignment + status_marker, 1)
-
-          pdf_marker = '                report.pdfs.forEach { file ->\n'
-          post_auth_guard = '''                if (afterLeclercLogin && report.authRequiredUrl != null) {
-              status = (status ?: "") +
-                  "\\nSession E.Leclerc enregistrée, mais le téléchargement HTTP est encore protégé. " +
-                  "Utilise « Reconnecter E.Leclerc » pour retenter dans le navigateur intégré."
-          }
-          '''
-          if 'Utilise « Reconnecter E.Leclerc »' not in text:
-              if pdf_marker not in text:
-                  raise SystemExit('Point insertion garde anti-boucle introuvable')
-              text = text.replace(pdf_marker, post_auth_guard + pdf_marker, 1)
 
           config_marker = '    if (showConfig) {\n'
           dialog_block = '''    leclercAuthUrl?.let { authUrl ->
               LeclercSessionDialog(
                   initialUrl = authUrl,
                   onDismiss = { leclercAuthUrl = null },
-                  onSessionSaved = {
+                  onPdfCaptured = { file ->
+                      DriveMailSync.markBrowserLinkProcessed(context, authUrl)
                       leclercAuthUrl = null
-                      status = "Session E.Leclerc validée sur le bon. Reprise de l'historique…"
-                      syncFromMail(afterLeclercLogin = true)
+                      leclercRetryUrl = null
+                      viewModel.importDrivePdf(Uri.fromFile(file), context) { msg ->
+                          status = msg + "\\nRecherche du bon suivant…"
+                          syncFromMail()
+                      }
                   }
               )
           }
@@ -219,8 +217,8 @@ jobs:
           PY
 
           echo "===== Correctifs appliqués ====="
-          grep -n -E "liveWebViewCookieFor|liveWebCookies|includeHistorical" "$SYNC_TARGET"
-          grep -n -E "afterLeclercLogin|leclercAuthUrl|leclercRetryUrl|Reconnecter E.Leclerc|LeclercSessionDialog" "$SCREEN_TARGET"
+          grep -n -E "liveWebViewCookieFor|markBrowserLinkProcessed|includeHistorical" "$SYNC_TARGET"
+          grep -n -E "leclercAuthUrl|leclercRetryUrl|onPdfCaptured|Reconnecter E.Leclerc|LeclercSessionDialog" "$SCREEN_TARGET"
 
       - name: Numero de version unique par build
         working-directory: ${{ steps.locate.outputs.dir }}
