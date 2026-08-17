@@ -39,15 +39,14 @@ new_tail = r'''    Dialog(
                     .fillMaxSize()
                     .statusBarsPadding()
             ) {
-                // Le WebView reste derrière les deux barres fixes. Les actions ne
-                // participent plus au calcul de hauteur du WebView : sur certains
-                // appareils la barre de navigation Android réduisait la fenêtre et
-                // poussait le bouton "Scanner et importer" hors écran.
+                // On réserve explicitement une zone basse suffisamment grande.
+                // Certains téléphones en navigation 3 boutons renvoient un inset
+                // de navigation trop petit/consommé dans cette Dialog edge-to-edge.
+                // Le WebView ne peut donc jamais recouvrir les actions.
                 AndroidView(
                     modifier = Modifier
                         .fillMaxSize()
-                        .padding(top = 62.dp, bottom = 150.dp)
-                        .navigationBarsPadding(),
+                        .padding(top = 62.dp, bottom = 230.dp),
                     factory = { ctx ->
                         WebView(ctx).also { view ->
                             webView = view
@@ -105,14 +104,16 @@ new_tail = r'''    Dialog(
                     }
                 }
 
+                // Important : la barre d'action entière est remontée de 72 dp.
+                // On ne dépend plus de navigationBarsPadding() pour sa position.
+                // imePadding() reste utilisé lorsque le clavier est ouvert.
                 Surface(
                     tonalElevation = 6.dp,
                     modifier = Modifier
                         .align(Alignment.BottomCenter)
                         .fillMaxWidth()
-                        .navigationBarsPadding()
                         .imePadding()
-                        .padding(bottom = 8.dp)
+                        .padding(bottom = 72.dp)
                         .zIndex(3f)
                 ) {
                     Column(
