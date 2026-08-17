@@ -36,189 +36,39 @@ jobs:
           echo "Projet trouvé dans : $DIR"
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Appliquer la récupération Leclerc authentifiée
+      - name: Appliquer les correctifs Drive
         run: |
           DIR="${{ steps.locate.outputs.dir }}"
           SYNC_TARGET="$DIR/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt"
           SCREEN_TARGET="$DIR/app/src/main/java/com/example/nicobudget/ui/DriveScreen.kt"
           SESSION_TARGET="$DIR/app/src/main/java/com/example/nicobudget/ui/LeclercSessionDialog.kt"
+          ENTITIES_TARGET="$DIR/app/src/main/java/com/example/nicobudget/data/model/DriveEntities.kt"
+          DAO_TARGET="$DIR/app/src/main/java/com/example/nicobudget/data/db/DriveOrderDao.kt"
 
-          test -f fixes/DriveMailSync.kt || { echo "fixes/DriveMailSync.kt introuvable"; exit 1; }
-          test -f fixes/LeclercSessionDialog.kt || { echo "fixes/LeclercSessionDialog.kt introuvable"; exit 1; }
-          test -f "$SYNC_TARGET" || { echo "DriveMailSync.kt introuvable dans le ZIP"; exit 1; }
-          test -f "$SCREEN_TARGET" || { echo "DriveScreen.kt introuvable dans le ZIP"; exit 1; }
+          for f in \
+            fixes/DriveMailSync.kt \
+            fixes/LeclercSessionDialog.kt \
+            fixes/DriveEntities.kt \
+            fixes/DriveOrderDao.kt \
+            fixes/patch_project.py; do
+            test -f "$f" || { echo "$f introuvable"; exit 1; }
+          done
+
+          for f in "$SYNC_TARGET" "$SCREEN_TARGET" "$ENTITIES_TARGET" "$DAO_TARGET"; do
+            test -f "$f" || { echo "$f introuvable dans le ZIP"; exit 1; }
+          done
 
           cp fixes/DriveMailSync.kt "$SYNC_TARGET"
           cp fixes/LeclercSessionDialog.kt "$SESSION_TARGET"
+          cp fixes/DriveEntities.kt "$ENTITIES_TARGET"
+          cp fixes/DriveOrderDao.kt "$DAO_TARGET"
 
-          # Le téléchargement HTTP historique continue de consulter les cookies du
-          # WebView. En plus, lorsqu'un PDF est réellement proposé par le WebView,
-          # on mémorise le lien du mail comme traité afin de passer au bon suivant.
-          python3 - "$SYNC_TARGET" <<'PY'
-          from pathlib import Path
-          import re
-          import sys
+          python3 fixes/patch_project.py "$DIR"
 
-          path = Path(sys.argv[1])
-          text = path.read_text(encoding="utf-8")
-
-          alias_import = 'import android.webkit.CookieManager as WebCookieManager\n'
-          if alias_import not in text:
-              marker = 'import android.content.Context\n'
-              if marker not in text:
-                  raise SystemExit('Import Context introuvable dans DriveMailSync')
-              text = text.replace(marker, marker + alias_import, 1)
-
-          helper_marker = '    private fun browserCookieFor(context: Context, url: String): String? {'
-          live_helper = '''    private fun liveWebViewCookieFor(url: String): String? = try {
-              WebCookieManager.getInstance().getCookie(url)
-                  ?.takeIf { it.isNotBlank() }
-          } catch (_: Exception) {
-              null
-          }
-
-          '''
-          if 'private fun liveWebViewCookieFor(' not in text:
-              if helper_marker not in text:
-                  raise SystemExit('Point insertion liveWebViewCookieFor introuvable')
-              text = text.replace(helper_marker, live_helper + helper_marker, 1)
-
-          if 'val liveWebCookies = liveWebViewCookieFor(current)' not in text:
-              pattern = re.compile(
-                  r'mergedCookieHeader\(\s*browserCookieFor\(context,\s*current\),\s*requestCookies\s*\)\?\.let\s*\{\s*conn\.setRequestProperty\("Cookie",\s*it\)\s*\}'
-              )
-              replacement = '''val liveWebCookies = liveWebViewCookieFor(current)
-          val persistedWebCookies = browserCookieFor(context, current)
-          val webCookies = mergedCookieHeader(
-              liveWebCookies,
-              listOfNotNull(persistedWebCookies)
-          )
-          mergedCookieHeader(
-              webCookies,
-              requestCookies
-          )?.let { conn.setRequestProperty("Cookie", it) }'''
-              text, count = pattern.subn(replacement, text, count=1)
-              if count != 1:
-                  raise SystemExit('Bloc Cookie HTTP introuvable')
-
-          if 'fun markBrowserLinkProcessed(' not in text:
-              marker = '    private fun ensureMailcap() {'
-              helper = '''    fun markBrowserLinkProcessed(context: Context, originalUrl: String) {
-              val processedLinks = loadKeySet(context, PREF_PROCESSED_LINKS)
-              markLinkProcessed(
-                  context,
-                  processedLinks,
-                  normalizeLinkForKey(originalUrl)
-              )
-          }
-
-          '''
-              if marker not in text:
-                  raise SystemExit('Point insertion markBrowserLinkProcessed introuvable')
-              text = text.replace(marker, helper + marker, 1)
-
-          path.write_text(text, encoding="utf-8")
-          PY
-
-          python3 - "$SCREEN_TARGET" <<'PY'
-          from pathlib import Path
-          import sys
-
-          path = Path(sys.argv[1])
-          text = path.read_text(encoding="utf-8")
-
-          state_marker = '    var autoSync by remember { mutableStateOf(DriveMailSync.isAutoSync(context)) }\n'
-          if 'var leclercAuthUrl by remember' not in text:
-              if state_marker not in text:
-                  raise SystemExit('Point insertion état Leclerc introuvable')
-              text = text.replace(
-                  state_marker,
-                  state_marker +
-                  '    var leclercAuthUrl by remember { mutableStateOf<String?>(null) }\n' +
-                  '    var leclercRetryUrl by remember { mutableStateOf<String?>(null) }\n',
-                  1
-              )
-          elif 'var leclercRetryUrl by remember' not in text:
-              text = text.replace(
-                  '    var leclercAuthUrl by remember { mutableStateOf<String?>(null) }\n',
-                  '    var leclercAuthUrl by remember { mutableStateOf<String?>(null) }\n' +
-                  '    var leclercRetryUrl by remember { mutableStateOf<String?>(null) }\n',
-                  1
-              )
-
-          old_call = '                    DriveMailSync.sync(context, config)'
-          new_call = '                    DriveMailSync.sync(context, config, includeHistorical = true)'
-          if old_call in text:
-              text = text.replace(old_call, new_call, 1)
-          elif new_call not in text:
-              raise SystemExit('Appel DriveMailSync.sync introuvable')
-
-          status_marker = '                status = "${report.mailsScanned} mails scannés, " +\n'
-          auth_assignment = '''                if (report.authRequiredUrl != null) {
-              leclercRetryUrl = report.authRequiredUrl
-              leclercAuthUrl = report.authRequiredUrl
-          } else if (report.pdfs.isNotEmpty()) {
-              leclercRetryUrl = null
-          }
-          '''
-          if 'leclercAuthUrl = report.authRequiredUrl' not in text:
-              if status_marker not in text:
-                  raise SystemExit('Point insertion rapport Leclerc introuvable')
-              text = text.replace(status_marker, auth_assignment + status_marker, 1)
-
-          config_marker = '    if (showConfig) {\n'
-          dialog_block = '''    leclercAuthUrl?.let { authUrl ->
-              LeclercSessionDialog(
-                  initialUrl = authUrl,
-                  onDismiss = { leclercAuthUrl = null },
-                  onPdfCaptured = { file ->
-                      DriveMailSync.markBrowserLinkProcessed(context, authUrl)
-                      leclercAuthUrl = null
-                      leclercRetryUrl = null
-                      viewModel.importDrivePdf(Uri.fromFile(file), context) { msg ->
-                          status = msg + "\\nRecherche du bon suivant…"
-                          syncFromMail()
-                      }
-                  }
-              )
-          }
-
-          '''
-          if 'LeclercSessionDialog(' not in text:
-              if config_marker not in text:
-                  raise SystemExit('Point insertion dialogue Leclerc introuvable')
-              text = text.replace(config_marker, dialog_block + config_marker, 1)
-
-          if 'Text("Reconnecter E.Leclerc")' not in text:
-              import_anchor = 'Text("Importer des PDF manuellement")'
-              anchor_pos = text.find(import_anchor)
-              if anchor_pos < 0:
-                  raise SystemExit('Bouton import PDF introuvable')
-              next_surface_item = text.find('\n        item {\n            Surface(', anchor_pos)
-              if next_surface_item < 0:
-                  raise SystemExit('Point insertion après import PDF introuvable')
-              retry_block = '''
-
-          if (leclercRetryUrl != null) {
-              item {
-                  OutlinedButton(
-                      onClick = { leclercRetryUrl?.let { leclercAuthUrl = it } },
-                      enabled = !syncing,
-                      modifier = Modifier.fillMaxWidth()
-                  ) {
-                      Text("Reconnecter E.Leclerc")
-                  }
-              }
-          }
-          '''
-              text = text[:next_surface_item] + retry_block + text[next_surface_item:]
-
-          path.write_text(text, encoding="utf-8")
-          PY
-
-          echo "===== Correctifs appliqués ====="
+          echo "===== Vérification correctifs ====="
           grep -n -E "liveWebViewCookieFor|markBrowserLinkProcessed|includeHistorical" "$SYNC_TARGET"
-          grep -n -E "leclercAuthUrl|leclercRetryUrl|onPdfCaptured|Reconnecter E.Leclerc|LeclercSessionDialog" "$SCREEN_TARGET"
+          grep -n -E "leclercAuthUrl|onPdfCaptured|Reconnecter E.Leclerc|Avantages totaux|Ticket E.Leclerc gagné|écart total/lignes" "$SCREEN_TARGET"
+          grep -n -E "ticketLeclerc|lineTotal" "$ENTITIES_TARGET" "$DAO_TARGET"
 
       - name: Numero de version unique par build
         working-directory: ${{ steps.locate.outputs.dir }}
