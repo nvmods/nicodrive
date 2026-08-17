@@ -55,7 +55,8 @@ jobs:
             fixes/DriveEntities.kt \
             fixes/DriveOrderDao.kt \
             fixes/patch_project.py \
-            fixes/patch_history.py; do
+            fixes/patch_history.py \
+            fixes/patch_history_layout.py; do
             test -f "$f" || { echo "$f introuvable"; exit 1; }
           done
 
@@ -72,11 +73,12 @@ jobs:
 
           python3 fixes/patch_project.py "$DIR"
           python3 fixes/patch_history.py "$DIR"
+          python3 fixes/patch_history_layout.py "$DIR"
 
           echo "===== Vérification correctifs ====="
           grep -n -E "liveWebViewCookieFor|markBrowserLinkProcessed|includeHistorical" "$SYNC_TARGET"
           grep -n -E "leclercAuthUrl|onPdfCaptured|Reconnecter E.Leclerc|Synchroniser l'historique E.Leclerc|LeclercHistoryDialog" "$SCREEN_TARGET"
-          grep -n -E "collectHistory|Scanner et importer|bon-de-commande.aspx|ddlFiltreAnnees|lbSuivant" "$HISTORY_TARGET"
+          grep -n -E "collectHistory|Scanner et importer|bon-de-commande.aspx|ddlFiltreAnnees|lbSuivant|navigationBarsPadding|zIndex" "$HISTORY_TARGET"
           grep -n -E "Top 10 produits|getDriveTopProducts\(month, 10000\)|Lignes ventilées|Les pourcentages ci-dessous" "$STATS_TARGET"
           grep -n -E "ticketLeclerc|lineTotal" "$ENTITIES_TARGET" "$DAO_TARGET"
 
