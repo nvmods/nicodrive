@@ -20,6 +20,7 @@ import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import com.example.nicobudget.drive.DriveMailSync
+import java.net.URI
 
 /**
  * Connexion interactive E.Leclerc.
@@ -27,6 +28,12 @@ import com.example.nicobudget.drive.DriveMailSync
  * Le reCAPTCHA reste entièrement manuel. NicoBudget ne lit jamais les
  * identifiants E.Leclerc : il réutilise uniquement la session/cookies créés
  * par le WebView après la connexion.
+ *
+ * Important : après "Session prête", on ne ferme plus immédiatement le
+ * navigateur. On recharge d'abord le lien du bon dans LE MÊME WebView afin
+ * que le SSO puisse déposer les cookies du domaine Drive. C'est seulement
+ * quand le bon est réellement atteint (ou qu'un PDF est proposé) que la
+ * session est validée et transmise à DriveMailSync.
  */
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -39,7 +46,23 @@ fun LeclercSessionDialog(
     var loading by remember { mutableStateOf(true) }
     var message by remember { mutableStateOf<String?>(null) }
     var webView by remember { mutableStateOf<WebView?>(null) }
+    var verifyingTarget by remember { mutableStateOf(false) }
     var sessionSubmitted by remember { mutableStateOf(false) }
+
+    val initialHost = remember(initialUrl) {
+        try {
+            URI(initialUrl).host?.lowercase().orEmpty()
+        } catch (_: Exception) {
+            ""
+        }
+    }
+    val initialPath = remember(initialUrl) {
+        try {
+            URI(initialUrl).path.orEmpty().lowercase()
+        } catch (_: Exception) {
+            ""
+        }
+    }
 
     fun persistSession(view: WebView, sessionUrl: String = currentUrl): Boolean {
         val cookieManager = CookieManager.getInstance()
@@ -54,17 +77,51 @@ fun LeclercSessionDialog(
         )
     }
 
-    fun submitSession(view: WebView, sessionUrl: String = currentUrl) {
+    fun isTargetLike(url: String?): Boolean {
+        if (url.isNullOrBlank()) return false
+        return try {
+            val uri = URI(url)
+            val host = uri.host?.lowercase().orEmpty()
+            val path = uri.path.orEmpty().lowercase()
+            val sameHost = initialHost.isNotBlank() && host == initialHost
+            val samePath = initialPath.isNotBlank() && path == initialPath
+            val bdcPath = path.contains("bon") && path.contains("commande")
+            sameHost && (samePath || bdcPath)
+        } catch (_: Exception) {
+            false
+        }
+    }
+
+    fun finishSession(view: WebView, sessionUrl: String = currentUrl) {
         if (sessionSubmitted) return
         sessionSubmitted = true
+        verifyingTarget = false
+        loading = false
         if (persistSession(view, sessionUrl)) {
-            loading = false
             onSessionSaved()
         } else {
             sessionSubmitted = false
-            loading = false
-            message = "Aucun cookie de session détecté. Termine d'abord la connexion E.Leclerc."
+            message = "Le bon est accessible, mais aucun cookie de session n'a été trouvé."
         }
+    }
+
+    fun verifySessionOnTarget(view: WebView) {
+        if (sessionSubmitted) return
+
+        // Sauvegarde d'abord la session du domaine de connexion/SSO courant.
+        if (!persistSession(view)) {
+            message = "Aucun cookie de session détecté. Termine d'abord la connexion E.Leclerc."
+            loading = false
+            return
+        }
+
+        verifyingTarget = true
+        loading = true
+        message = "Connexion détectée. Vérification du bon de commande…"
+
+        // Étape essentielle : repasser par le lien d'origine dans le WebView
+        // authentifié pour laisser E.Leclerc poser les cookies du domaine Drive.
+        view.loadUrl(initialUrl)
     }
 
     DisposableEffect(Unit) {
@@ -89,12 +146,6 @@ fun LeclercSessionDialog(
                     .statusBarsPadding()
                     .navigationBarsPadding()
             ) {
-                /*
-                 * Le WebView occupe le centre de l'écran avec des réserves fixes
-                 * pour les barres Compose. Les barres sont aussi placées au-dessus
-                 * via zIndex : une navigation Web ne peut donc plus les faire
-                 * disparaître visuellement.
-                 */
                 AndroidView(
                     modifier = Modifier
                         .fillMaxSize()
@@ -127,10 +178,9 @@ fun LeclercSessionDialog(
 
                             view.webChromeClient = object : WebChromeClient() {
                                 override fun onProgressChanged(view: WebView?, newProgress: Int) {
-                                    // Certains parcours SSO ne déclenchent pas toujours
-                                    // onPageFinished. Le progrès à 100 % évite donc un
-                                    // indicateur "Chargement…" bloqué indéfiniment.
-                                    if (newProgress >= 100) loading = false
+                                    if (newProgress >= 100 && !verifyingTarget) {
+                                        loading = false
+                                    }
                                 }
                             }
 
@@ -142,12 +192,26 @@ fun LeclercSessionDialog(
                                 ) {
                                     url?.let { currentUrl = it }
                                     loading = true
-                                    message = null
+                                    if (!verifyingTarget) message = null
                                 }
 
                                 override fun onPageFinished(view: WebView?, url: String?) {
                                     url?.let { currentUrl = it }
-                                    loading = false
+                                    val currentView = view ?: return
+
+                                    // Toujours mémoriser les cookies gagnés au fil des
+                                    // redirections SSO, sans fermer prématurément le dialogue.
+                                    persistSession(currentView, url ?: currentUrl)
+
+                                    if (verifyingTarget && isTargetLike(url)) {
+                                        finishSession(currentView, url ?: currentUrl)
+                                    } else {
+                                        loading = false
+                                        if (verifyingTarget) {
+                                            message = "Leclerc n'a pas encore rouvert le bon. " +
+                                                "Si la page demande encore une connexion/reCAPTCHA, termine-la puis retouche « Vérifier le bon »."
+                                        }
+                                    }
                                 }
 
                                 override fun onReceivedHttpError(
@@ -157,7 +221,10 @@ fun LeclercSessionDialog(
                                 ) {
                                     if (request?.isForMainFrame == true) {
                                         loading = false
-                                        message = "E.Leclerc a répondu HTTP ${errorResponse?.statusCode ?: "?"}."
+                                        verifyingTarget = false
+                                        sessionSubmitted = false
+                                        message = "E.Leclerc a répondu HTTP ${errorResponse?.statusCode ?: "?"}. " +
+                                            "La session n'est pas encore utilisable pour ce bon."
                                     }
                                 }
 
@@ -169,17 +236,14 @@ fun LeclercSessionDialog(
                                     failingUrl: String?
                                 ) {
                                     loading = false
+                                    verifyingTarget = false
+                                    sessionSubmitted = false
                                     message = "Erreur de chargement : ${description ?: "inconnue"}"
                                 }
                             }
 
-                            /*
-                             * Après authentification, E.Leclerc peut répondre directement
-                             * par un PDF. Android WebView passe alors par DownloadListener
-                             * au lieu de onPageFinished. C'est précisément un signe que la
-                             * session est valide : on la sauvegarde et on laisse NicoBudget
-                             * reprendre le téléchargement lui-même.
-                             */
+                            // Un PDF proposé au WebView prouve que le navigateur authentifié
+                            // a réellement franchi la protection du bon de commande.
                             view.setDownloadListener { url, _, _, mimeType, _ ->
                                 if (!url.isNullOrBlank()) currentUrl = url
                                 loading = false
@@ -187,7 +251,7 @@ fun LeclercSessionDialog(
                                     mimeType?.contains("pdf", ignoreCase = true) == true ||
                                     url?.contains("bon", ignoreCase = true) == true
                                 ) {
-                                    submitSession(view, url ?: currentUrl)
+                                    finishSession(view, url ?: currentUrl)
                                 }
                             }
 
@@ -219,7 +283,11 @@ fun LeclercSessionDialog(
                             TextButton(onClick = onDismiss) { Text("Fermer") }
                         }
                         Text(
-                            "Connecte-toi et valide le reCAPTCHA, puis touche « Session prête ».",
+                            if (verifyingTarget) {
+                                "Vérification du lien du bon dans la session authentifiée…"
+                            } else {
+                                "Connecte-toi et valide le reCAPTCHA, puis touche « Vérifier le bon »."
+                            },
                             style = MaterialTheme.typography.bodySmall
                         )
                     }
@@ -239,7 +307,11 @@ fun LeclercSessionDialog(
                         message?.let {
                             Text(
                                 it,
-                                color = MaterialTheme.colorScheme.error,
+                                color = if (verifyingTarget) {
+                                    MaterialTheme.colorScheme.primary
+                                } else {
+                                    MaterialTheme.colorScheme.error
+                                },
                                 style = MaterialTheme.typography.bodySmall
                             )
                             Spacer(Modifier.height(6.dp))
@@ -264,11 +336,17 @@ fun LeclercSessionDialog(
                                     if (view == null) {
                                         message = "Navigateur non prêt."
                                     } else {
-                                        submitSession(view)
+                                        verifySessionOnTarget(view)
                                     }
                                 }
                             ) {
-                                Text(if (sessionSubmitted) "Validation…" else "Session prête")
+                                Text(
+                                    when {
+                                        sessionSubmitted -> "Validation…"
+                                        verifyingTarget -> "Retester le bon"
+                                        else -> "Vérifier le bon"
+                                    }
+                                )
                             }
                         }
                     }
