@@ -27,21 +27,14 @@ interface DriveOrderDao {
 
     /**
      * Synthèse mensuelle Drive.
-     *
-     * - total = montant final réellement payé ;
-     * - savings = économies/remises indiquées sur les bons ;
-     * - ticketLeclerc = gains crédités en Ticket E.Leclerc ;
-     * - lineTotal = somme des lignes produits reconnues par le parser.
-     *
-     * lineTotal est calculé séparément pour ne pas multiplier les lignes de
-     * commande lors de l'agrégation des montants de drive_orders.
+     * total = montant final payé ; lineTotal = somme des lignes reconnues.
      */
     @Query(
         """
         SELECT substr(o.date, 1, 7) AS month,
-               COUNT(*)            AS orderCount,
-               SUM(o.total)        AS total,
-               SUM(o.savings)      AS savings,
+               COUNT(*)             AS orderCount,
+               SUM(o.total)         AS total,
+               SUM(o.savings)       AS savings,
                SUM(o.ticketLeclerc) AS ticketLeclerc,
                COALESCE(
                    (
@@ -59,7 +52,7 @@ interface DriveOrderDao {
     )
     suspend fun getMonthlyTotals(): List<DriveMonthlyTotal>
 
-    /** Quantités et dépense par mois pour un produit ("eau" -> 10 bouteilles). */
+    /** Quantités et dépense par mois pour une recherche produit. */
     @Query(
         """
         SELECT substr(o.date, 1, 7) AS month,
@@ -74,17 +67,16 @@ interface DriveOrderDao {
     )
     suspend fun getProductStats(search: String): List<DriveProductStat>
 
-    /** Mois ayant au moins une commande (yyyy-MM, plus récent d'abord). */
     @Query("SELECT DISTINCT substr(date, 1, 7) AS month FROM drive_orders ORDER BY month DESC")
     suspend fun getAvailableMonths(): List<String>
 
-    /** Classement des produits les plus achetés sur un mois. */
+    /** Classement produit sur un mois. */
     @Query(
         """
-        SELECT l.label                    AS label,
-               SUM(l.quantity)            AS quantity,
-               SUM(l.total)               AS total,
-               COUNT(DISTINCT l.orderId)  AS orders
+        SELECT l.label                   AS label,
+               SUM(l.quantity)           AS quantity,
+               SUM(l.total)              AS total,
+               COUNT(DISTINCT l.orderId) AS orders
         FROM drive_order_lines l
         JOIN drive_orders o ON o.id = l.orderId
         WHERE substr(o.date, 1, 7) = :month
@@ -95,7 +87,39 @@ interface DriveOrderDao {
     )
     suspend fun getTopProducts(month: String, limit: Int): List<DriveTopProduct>
 
-    /** Évolution mensuelle d'un produit précis (libellé exact). */
+    /** Classement produit sur une année complète. */
+    @Query(
+        """
+        SELECT l.label                   AS label,
+               SUM(l.quantity)           AS quantity,
+               SUM(l.total)              AS total,
+               COUNT(DISTINCT l.orderId) AS orders
+        FROM drive_order_lines l
+        JOIN drive_orders o ON o.id = l.orderId
+        WHERE substr(o.date, 1, 4) = :year
+        GROUP BY l.label
+        ORDER BY total DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun getTopProductsForYear(year: String, limit: Int): List<DriveTopProduct>
+
+    /** Classement produit sur tout l'historique importé. */
+    @Query(
+        """
+        SELECT l.label                   AS label,
+               SUM(l.quantity)           AS quantity,
+               SUM(l.total)              AS total,
+               COUNT(DISTINCT l.orderId) AS orders
+        FROM drive_order_lines l
+        GROUP BY l.label
+        ORDER BY total DESC
+        LIMIT :limit
+        """
+    )
+    suspend fun getTopProductsAll(limit: Int): List<DriveTopProduct>
+
+    /** Évolution mensuelle d'un produit précis. */
     @Query(
         """
         SELECT substr(o.date, 1, 7) AS month,
@@ -110,10 +134,11 @@ interface DriveOrderDao {
     )
     suspend fun getProductEvolution(label: String): List<DriveProductStat>
 
-    /** Dépense par rayon sur un mois donné (yyyy-MM). */
+    /** Répartition par rayon sur un mois. */
     @Query(
         """
-        SELECT COALESCE(l.section, 'Sans rayon') AS category, SUM(l.total) AS total
+        SELECT COALESCE(l.section, 'Sans rayon') AS category,
+               SUM(l.total) AS total
         FROM drive_order_lines l
         JOIN drive_orders o ON o.id = l.orderId
         WHERE substr(o.date, 1, 7) = :month
@@ -122,4 +147,30 @@ interface DriveOrderDao {
         """
     )
     suspend fun getSectionTotalsForMonth(month: String): List<CategoryExpenseTotal>
+
+    /** Répartition par rayon sur une année. */
+    @Query(
+        """
+        SELECT COALESCE(l.section, 'Sans rayon') AS category,
+               SUM(l.total) AS total
+        FROM drive_order_lines l
+        JOIN drive_orders o ON o.id = l.orderId
+        WHERE substr(o.date, 1, 4) = :year
+        GROUP BY COALESCE(l.section, 'Sans rayon')
+        ORDER BY total DESC
+        """
+    )
+    suspend fun getSectionTotalsForYear(year: String): List<CategoryExpenseTotal>
+
+    /** Répartition par rayon sur tout l'historique. */
+    @Query(
+        """
+        SELECT COALESCE(l.section, 'Sans rayon') AS category,
+               SUM(l.total) AS total
+        FROM drive_order_lines l
+        GROUP BY COALESCE(l.section, 'Sans rayon')
+        ORDER BY total DESC
+        """
+    )
+    suspend fun getSectionTotalsAll(): List<CategoryExpenseTotal>
 }
