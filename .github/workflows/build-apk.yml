@@ -70,7 +70,8 @@ jobs:
             fixes/patch_drive_budget.py \
             fixes/patch_all_products_stats.py \
             fixes/patch_advanced_stats.py \
-            fixes/patch_final_insights.py; do
+            fixes/patch_final_insights.py \
+            fixes/patch_stats_integrity.py; do
             test -f "$f" || { echo "$f introuvable"; exit 1; }
           done
 
@@ -97,15 +98,16 @@ jobs:
           python3 fixes/patch_all_products_stats.py "$DIR"
           python3 fixes/patch_advanced_stats.py "$DIR"
           python3 fixes/patch_final_insights.py "$DIR"
+          python3 fixes/patch_stats_integrity.py "$DIR"
 
           echo "===== Vérification correctifs ====="
           grep -n -E "liveWebViewCookieFor|markBrowserLinkProcessed|includeHistorical" "$SYNC_TARGET"
           grep -n -E "belongsToActiveBudgetCycle|reconcileCurrentBudget|hors budget courant" "$IMPORTER_TARGET"
           grep -n -E "leclercAuthUrl|onPdfCaptured|Reconnecter E.Leclerc|Synchroniser l'historique E.Leclerc|LeclercHistoryDialog" "$SCREEN_TARGET"
           grep -n -E "collectHistory|Scanner et importer|bon-de-commande.aspx|ddlFiltreAnnees|lbSuivant|navigationBarsPadding|zIndex" "$HISTORY_TARGET"
-          grep -n -E "Historique global|Totaux par année|Dépenses par mois|getDriveTopProductsAll|getDriveTopProductsForYear|Voir tous les produits|FREQUENCY|DriveMonthComparison|DriveTrendCharts|ProductPriceEvolutionChart|DriveHistoricalInsights" "$STATS_TARGET" "$VM_TARGET"
-          grep -n -E "Évolution dans le temps|Comparer deux mois|Prix moyen / unité|Comparatif" "$ADV_STATS_TARGET"
-          grep -n -E "Inflation de ton panier comparable|Tendance lissée|Saisonnalité par rayon|Hausses de prix à surveiller|Évolution annuelle" "$INSIGHTS_TARGET"
+          grep -n -E "Historique global|Totaux enregistrés par année|Moyenne par mois complet|Voir tous les produits|FREQUENCY|DriveMonthComparison|DriveTrendCharts|ProductPriceEvolutionChart|DriveHistoricalInsights" "$STATS_TARGET" "$VM_TARGET"
+          grep -n -E "mois en cours est volontairement exclu|zeroBaseline|Prix moyen / unité|Comparatif" "$ADV_STATS_TARGET"
+          grep -n -E "Évolution annuelle comparable|mêmes mois terminés|completeMonthly|Inflation de ton panier comparable|Tendance lissée|Saisonnalité par rayon|Hausses de prix à surveiller" "$INSIGHTS_TARGET"
           grep -n -E "AllProductsDialog|Fréquence|Rechercher un produit" "$ALL_PRODUCTS_TARGET"
           grep -n -E "getAllOrdersNow|setExpenseId|getTopProductsForYear|getTopProductsAll|getSectionTotalsForYear|getSectionTotalsAll|getProductMonthlyStatsAll|getSectionMonthlyStatsAll" "$DAO_TARGET"
           grep -n -E "getDriveProductMonthlyStatsAll|getDriveSectionMonthlyStatsAll|reconcileCurrentBudget" "$VM_TARGET"
