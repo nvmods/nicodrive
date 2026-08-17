@@ -22,12 +22,22 @@ import javax.mail.internet.MimeMultipart
 object DriveMailSync {
 
     private const val MAX_SCAN = 150
-    private const val MAX_RECOVERY_AGE_MS = 14L * 24L * 60L * 60L * 1000L
+    private const val MAX_BACKGROUND_AGE_MS = 14L * 24L * 60L * 60L * 1000L
     private const val RETRY_403_AGE_MS = 24L * 60L * 60L * 1000L
     private const val MAX_PROCESSED_KEYS = 500
 
-    private const val PREF_PROCESSED_MESSAGES = "processed_mail_keys_v2"
+    // v3 remet volontairement à zéro les mails que la b50 avait marqués comme
+    // "expirés". Les liens déjà récupérés restent en v2 afin d'éviter les doublons.
+    private const val PREF_PROCESSED_MESSAGES = "processed_mail_keys_v3"
     private const val PREF_PROCESSED_LINKS = "processed_drive_links_v2"
+
+    private const val PREF_AUTH_COOKIE_PREFIX = "leclerc_auth_cookie_v1_"
+    private const val PREF_AUTH_USER_AGENT = "leclerc_auth_user_agent_v1"
+    private const val PREF_AUTH_SAVED_AT = "leclerc_auth_saved_at_v1"
+
+    private const val DEFAULT_USER_AGENT =
+        "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 " +
+            "(KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36"
 
     private val RE_URL = Regex("""https?://[^\s"'<>)\]]+""", RegexOption.IGNORE_CASE)
     private val RE_IMAGE = Regex(
@@ -52,7 +62,9 @@ object DriveMailSync {
         val leclercMails: Int,
         val linksTried: Int,
         val pdfs: List<File>,
-        val failures: List<String>
+        val failures: List<String>,
+        val authRequiredUrl: String? = null,
+        val historicalSkipped: Int = 0
     )
 
     private fun prefs(context: Context) = EncryptedSharedPreferences.create(
@@ -80,6 +92,79 @@ object DriveMailSync {
         val pass = p.getString("password", null) ?: return null
         return MailConfig(host, user, pass)
     }
+
+    fun setAutoSync(context: Context, enabled: Boolean) {
+        prefs(context).edit().putBoolean("auto_sync", enabled).apply()
+    }
+
+    fun isAutoSync(context: Context): Boolean =
+        prefs(context).getBoolean("auto_sync", false)
+
+    private fun hostOf(url: String): String? = try {
+        URI(url).host?.lowercase()?.takeIf { it.isNotBlank() }
+    } catch (_: Exception) {
+        null
+    }
+
+    /**
+     * Enregistre les cookies créés après la connexion interactive dans le WebView.
+     * Les identifiants E.Leclerc ne sont jamais lus ni stockés par l'application :
+     * seule la session HTTP déjà authentifiée est conservée, dans les préférences
+     * chiffrées existantes de NicoBudget.
+     */
+    fun saveBrowserSession(
+        context: Context,
+        originalUrl: String,
+        currentUrl: String,
+        originalCookies: String?,
+        currentCookies: String?,
+        userAgent: String
+    ): Boolean {
+        val editor = prefs(context).edit()
+        var saved = false
+
+        listOf(
+            originalUrl to originalCookies,
+            currentUrl to currentCookies
+        ).forEach { (url, cookies) ->
+            val host = hostOf(url)
+            if (host != null && !cookies.isNullOrBlank()) {
+                editor.putString(PREF_AUTH_COOKIE_PREFIX + host, cookies.trim())
+                saved = true
+            }
+        }
+
+        if (saved) {
+            if (userAgent.isNotBlank()) {
+                editor.putString(PREF_AUTH_USER_AGENT, userAgent)
+            }
+            editor.putLong(PREF_AUTH_SAVED_AT, System.currentTimeMillis())
+            editor.apply()
+        }
+        return saved
+    }
+
+    fun clearBrowserSession(context: Context) {
+        val p = prefs(context)
+        val editor = p.edit()
+        p.all.keys
+            .filter { it.startsWith(PREF_AUTH_COOKIE_PREFIX) }
+            .forEach { editor.remove(it) }
+        editor.remove(PREF_AUTH_USER_AGENT)
+        editor.remove(PREF_AUTH_SAVED_AT)
+        editor.apply()
+    }
+
+    private fun browserCookieFor(context: Context, url: String): String? {
+        val host = hostOf(url) ?: return null
+        return prefs(context).getString(PREF_AUTH_COOKIE_PREFIX + host, null)
+            ?.takeIf { it.isNotBlank() }
+    }
+
+    private fun browserUserAgent(context: Context): String =
+        prefs(context).getString(PREF_AUTH_USER_AGENT, null)
+            ?.takeIf { it.isNotBlank() }
+            ?: DEFAULT_USER_AGENT
 
     private fun loadKeySet(context: Context, key: String): LinkedHashSet<String> {
         val raw = prefs(context).getString(key, null).orEmpty()
@@ -208,7 +293,20 @@ object DriveMailSync {
         return all.sortedByDescending { score(it) }
     }
 
-    fun sync(context: Context, config: MailConfig, lookback: Int = MAX_SCAN): SyncReport {
+    /**
+     * Synchronisation normale : les vieux mails sont ignorés pour le Worker afin
+     * de ne pas provoquer de reCAPTCHA en arrière-plan.
+     *
+     * includeHistorical=true est utilisé par le bouton manuel de l'écran Drive.
+     * Dans ce mode les vieux liens sont essayés et un 401/403 remonte l'URL à ouvrir
+     * dans le WebView de connexion E.Leclerc.
+     */
+    fun sync(
+        context: Context,
+        config: MailConfig,
+        lookback: Int = MAX_SCAN,
+        includeHistorical: Boolean = false
+    ): SyncReport {
         ensureMailcap()
 
         val props = Properties().apply {
@@ -226,6 +324,8 @@ object DriveMailSync {
         var scanned = 0
         var relevantLeclerc = 0
         var tried = 0
+        var historicalSkipped = 0
+        var authRequiredUrl: String? = null
         val pdfs = mutableListOf<File>()
         val failures = mutableListOf<String>()
 
@@ -244,10 +344,10 @@ object DriveMailSync {
                     val messages = inbox.getMessages(start, count)
                     scanned = messages.size
 
-                    // Traite du plus ancien au plus récent : si plusieurs notifications
-                    // concernent la même commande, le premier PDF réussi suffit.
-                    for (msg in messages.sortedBy {
-                        (it.receivedDate ?: it.sentDate)?.time ?: Long.MAX_VALUE
+                    // Le plus récent d'abord : on récupère immédiatement les liens encore
+                    // anonymes, puis on demande une connexion seulement pour l'historique.
+                    messageLoop@ for (msg in messages.sortedByDescending {
+                        (it.receivedDate ?: it.sentDate)?.time ?: 0L
                     }) {
                         val key = messageKey(msg)
                         if (processedMessages.contains(key)) continue
@@ -263,12 +363,8 @@ object DriveMailSync {
                         }
 
                         val ageMs = messageAgeMs(msg, now)
-
-                        // Les liens "bon de commande" E.Leclerc sont temporaires.
-                        // Inutile de retenter des notifications anciennes à chaque synchro :
-                        // elles provoquent précisément les HTTP 403 observés après retrait.
-                        if (ageMs > MAX_RECOVERY_AGE_MS) {
-                            markProcessed(context, processedMessages, key)
+                        if (!includeHistorical && ageMs > MAX_BACKGROUND_AGE_MS) {
+                            historicalSkipped++
                             continue
                         }
 
@@ -277,7 +373,7 @@ object DriveMailSync {
                             .filter { RE_BDC.containsMatchIn(it) }
                             .take(6)
 
-                        // Mail Leclerc sans lien de bon de commande (prêt, info, marketing...).
+                        // Mail Leclerc sans bon de commande : on peut le considérer traité.
                         if (bdcLinks.isEmpty()) {
                             markProcessed(context, processedMessages, key)
                             continue
@@ -285,8 +381,6 @@ object DriveMailSync {
 
                         relevantLeclerc++
 
-                        // Si le même lien de commande a déjà été récupéré via une autre
-                        // notification, ce mail est un doublon logique.
                         val alreadyDone = bdcLinks.any {
                             processedLinks.contains(normalizeLinkForKey(it))
                         }
@@ -319,14 +413,21 @@ object DriveMailSync {
                         }
 
                         if (!found && firstFailure != null) {
-                            // Un 403 sur un vieux mail signifie généralement que le lien
-                            // temporaire est expiré. On l'abandonne après 24 h pour éviter
-                            // une erreur permanente toutes les 6 h.
-                            if (firstFailureCode == 403 && ageMs > RETRY_403_AGE_MS) {
-                                markProcessed(context, processedMessages, key)
+                            if (firstFailureCode == 401 || firstFailureCode == 403) {
+                                if (includeHistorical) {
+                                    authRequiredUrl = bdcLinks.firstOrNull()
+                                    failures.add(
+                                        "Connexion E.Leclerc requise pour récupérer l'historique."
+                                    )
+                                    break@messageLoop
+                                } else if (ageMs > RETRY_403_AGE_MS) {
+                                    // Ne pas marquer le mail traité : le mode manuel historique
+                                    // doit pouvoir le reprendre plus tard après authentification.
+                                    historicalSkipped++
+                                } else {
+                                    failures.add(firstFailure)
+                                }
                             } else {
-                                // Pour un mail récent, on garde le message non traité :
-                                // le Worker réessaiera à la prochaine synchro.
                                 failures.add(firstFailure)
                             }
                         }
@@ -339,7 +440,15 @@ object DriveMailSync {
             store.close()
         }
 
-        return SyncReport(scanned, relevantLeclerc, tried, pdfs, failures)
+        return SyncReport(
+            mailsScanned = scanned,
+            leclercMails = relevantLeclerc,
+            linksTried = tried,
+            pdfs = pdfs,
+            failures = failures,
+            authRequiredUrl = authRequiredUrl,
+            historicalSkipped = historicalSkipped
+        )
     }
 
     private fun extractText(part: Part): String = try {
@@ -373,12 +482,36 @@ object DriveMailSync {
         val httpCode: Int? = null
     )
 
+    private fun cookiePairs(header: String?): List<Pair<String, String>> {
+        if (header.isNullOrBlank()) return emptyList()
+        return header.split(';').mapNotNull { raw ->
+            val part = raw.trim()
+            val eq = part.indexOf('=')
+            if (eq <= 0) null
+            else part.substring(0, eq).trim() to part.substring(eq + 1).trim()
+        }
+    }
+
+    private fun mergedCookieHeader(
+        browserHeader: String?,
+        requestHeaders: List<String>
+    ): String? {
+        val merged = LinkedHashMap<String, String>()
+        cookiePairs(browserHeader).forEach { (name, value) -> merged[name] = value }
+        requestHeaders.forEach { header ->
+            cookiePairs(header).forEach { (name, value) -> merged[name] = value }
+        }
+        if (merged.isEmpty()) return null
+        return merged.entries.joinToString("; ") { "${it.key}=${it.value}" }
+    }
+
     /**
-     * GET avec cookies RFC gérés par java.net.CookieManager.
-     * Le Referer est mis à jour à chaque redirection, contrairement à l'ancien
-     * jar artisanal qui pouvait présenter un contexte incohérent au serveur.
+     * GET avec les cookies de la tentative courante + la session authentifiée
+     * capturée dans le WebView. Le User-Agent du WebView est également réutilisé
+     * afin de rester cohérent avec la session qui a passé le reCAPTCHA.
      */
     private fun fetch(
+        context: Context,
         url: String,
         cookies: CookieManager,
         referer: String? = null
@@ -396,11 +529,7 @@ object DriveMailSync {
             conn.useCaches = false
             conn.requestMethod = "GET"
 
-            conn.setRequestProperty(
-                "User-Agent",
-                "Mozilla/5.0 (Linux; Android 15) AppleWebKit/537.36 " +
-                    "(KHTML, like Gecko) Chrome/140.0.0.0 Mobile Safari/537.36"
-            )
+            conn.setRequestProperty("User-Agent", browserUserAgent(context))
             conn.setRequestProperty(
                 "Accept",
                 "text/html,application/xhtml+xml,application/xml;q=0.9," +
@@ -410,9 +539,20 @@ object DriveMailSync {
             conn.setRequestProperty("Upgrade-Insecure-Requests", "1")
             conn.setRequestProperty("Sec-Fetch-Mode", "navigate")
             conn.setRequestProperty("Sec-Fetch-Dest", "document")
+
+            val sameHost = try {
+                currentReferer != null &&
+                    URI(currentReferer).host.equals(uri.host, ignoreCase = true)
+            } catch (_: Exception) {
+                false
+            }
             conn.setRequestProperty(
                 "Sec-Fetch-Site",
-                if (currentReferer == null) "none" else "same-origin"
+                when {
+                    currentReferer == null -> "none"
+                    sameHost -> "same-origin"
+                    else -> "cross-site"
+                }
             )
             if (currentReferer == null) {
                 conn.setRequestProperty("Sec-Fetch-User", "?1")
@@ -425,9 +565,10 @@ object DriveMailSync {
             } catch (_: Exception) {
                 emptyList()
             }
-            if (requestCookies.isNotEmpty()) {
-                conn.setRequestProperty("Cookie", requestCookies.joinToString("; "))
-            }
+            mergedCookieHeader(
+                browserCookieFor(context, current),
+                requestCookies
+            )?.let { conn.setRequestProperty("Cookie", it) }
 
             val code = conn.responseCode
 
@@ -490,19 +631,15 @@ object DriveMailSync {
     }
 
     /**
-     * Essaie plusieurs parcours compatibles avec les anciens mails E.Leclerc :
-     * 1. URL du bouton telle quelle ;
-     * 2. liens ASPX découverts dans la page ;
-     * 3. variante historique /bondecommande.aspx avec les mêmes jetons.
-     *
-     * Le point important du correctif v1.5 est surtout de ne plus rejouer
-     * indéfiniment les liens temporaires de vieux mails déjà traités/expirés.
+     * Essaie plusieurs parcours compatibles avec les mails E.Leclerc :
+     * URL du bouton, liens ASPX trouvés dans la page et variante historique
+     * /bondecommande.aspx. Une session WebView authentifiée est injectée si elle existe.
      */
     private fun downloadPdf(context: Context, url: String): PdfDownloadResult {
         return try {
             val cookies = CookieManager(null, CookiePolicy.ACCEPT_ALL)
 
-            var res = fetch(url, cookies)
+            var res = fetch(context, url, cookies)
                 ?: return PdfDownloadResult("redirection sans Location", null)
 
             if (isPdf(res.bytes)) {
@@ -519,7 +656,7 @@ object DriveMailSync {
             var last = res
             for (target in targets) {
                 if (target == last.finalUrl) continue
-                val next = fetch(target, cookies, referer = last.finalUrl) ?: continue
+                val next = fetch(context, target, cookies, referer = last.finalUrl) ?: continue
                 last = next
                 if (isPdf(next.bytes)) {
                     val file = File.createTempFile("bdc_", ".pdf", context.cacheDir)
