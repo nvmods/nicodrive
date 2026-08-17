@@ -1,0 +1,23 @@
+name: Diagnose Drive Stats UI
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch: {}
+jobs:
+  diag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Inspecter les stats Drive détaillees
+        shell: bash
+        run: |
+          set -e
+          ZIP=$(ls *.zip | head -1)
+          unzip -o -q "$ZIP" -d projet
+          echo "===== OCCURRENCES ====="
+          grep -RInE 'Top 10|Top produits|top produits|Répartition|repartition|rayon|Rayon|getDriveSectionTotals|getDriveTopProducts|getSectionTotalsForMonth|getTopProducts|DriveTopProduct' projet/app/src/main/java || true
+          echo "===== FICHIERS ====="
+          grep -RIlE 'Top 10|Top produits|top produits|Répartition|repartition|getDriveSectionTotals|getDriveTopProducts|getSectionTotalsForMonth|getTopProducts|DriveTopProduct' projet/app/src/main/java | while IFS= read -r f; do
+            echo "----- $f -----"
+            cat "$f"
+          done
