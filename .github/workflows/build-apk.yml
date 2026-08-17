@@ -117,7 +117,16 @@ jobs:
                   raise SystemExit('Point insertion état Leclerc introuvable')
               text = text.replace(
                   state_marker,
-                  state_marker + '    var leclercAuthUrl by remember { mutableStateOf<String?>(null) }\n',
+                  state_marker +
+                  '    var leclercAuthUrl by remember { mutableStateOf<String?>(null) }\n' +
+                  '    var leclercRetryUrl by remember { mutableStateOf<String?>(null) }\n',
+                  1
+              )
+          elif 'var leclercRetryUrl by remember' not in text:
+              text = text.replace(
+                  '    var leclercAuthUrl by remember { mutableStateOf<String?>(null) }\n',
+                  '    var leclercAuthUrl by remember { mutableStateOf<String?>(null) }\n' +
+                  '    var leclercRetryUrl by remember { mutableStateOf<String?>(null) }\n',
                   1
               )
 
@@ -136,12 +145,17 @@ jobs:
               raise SystemExit('Appel DriveMailSync.sync introuvable')
 
           status_marker = '                status = "${report.mailsScanned} mails scannés, " +\n'
-          auth_assignment = '''                // Après une connexion WebView on ne rouvre jamais
-          // immédiatement la fenêtre si Leclerc refuse encore la requête HTTP :
-          // cela évite la boucle connexion -> reprise -> connexion.
+          auth_assignment = '''                if (report.authRequiredUrl != null) {
+              leclercRetryUrl = report.authRequiredUrl
+          } else if (report.pdfs.isNotEmpty()) {
+              leclercRetryUrl = null
+          }
+          // Après une connexion WebView on ne rouvre jamais automatiquement
+          // la fenêtre si Leclerc refuse encore la requête HTTP : cela évite
+          // la boucle connexion -> reprise -> connexion. Le retry manuel reste disponible.
           leclercAuthUrl = if (afterLeclercLogin) null else report.authRequiredUrl
           '''
-          if 'leclercAuthUrl = if (afterLeclercLogin)' not in text:
+          if 'leclercRetryUrl = report.authRequiredUrl' not in text:
               if status_marker not in text:
                   raise SystemExit('Point insertion rapport Leclerc introuvable')
               text = text.replace(status_marker, auth_assignment + status_marker, 1)
@@ -149,11 +163,11 @@ jobs:
           pdf_marker = '                report.pdfs.forEach { file ->\n'
           post_auth_guard = '''                if (afterLeclercLogin && report.authRequiredUrl != null) {
               status = (status ?: "") +
-                  "\\nSession E.Leclerc enregistrée, mais le téléchargement est encore protégé. " +
-                  "La fenêtre de connexion ne sera pas rouverte en boucle."
+                  "\\nSession E.Leclerc enregistrée, mais le téléchargement HTTP est encore protégé. " +
+                  "Tu peux relancer la connexion manuellement."
           }
           '''
-          if 'La fenêtre de connexion ne sera pas rouverte en boucle' not in text:
+          if 'Tu peux relancer la connexion manuellement' not in text:
               if pdf_marker not in text:
                   raise SystemExit('Point insertion garde anti-boucle introuvable')
               text = text.replace(pdf_marker, post_auth_guard + pdf_marker, 1)
@@ -165,7 +179,7 @@ jobs:
                   onDismiss = { leclercAuthUrl = null },
                   onSessionSaved = {
                       leclercAuthUrl = null
-                      status = "Session E.Leclerc enregistrée. Reprise de l'historique…"
+                      status = "Session E.Leclerc validée sur le bon. Reprise de l'historique…"
                       syncFromMail(afterLeclercLogin = true)
                   }
               )
@@ -182,7 +196,9 @@ jobs:
 
           echo "===== Correctifs appliqués ====="
           grep -n -E "liveWebViewCookieFor|liveWebCookies|includeHistorical" "$SYNC_TARGET"
-          grep -n -E "afterLeclercLogin|leclercAuthUrl|LeclercSessionDialog" "$SCREEN_TARGET"
+          grep -n -E "afterLeclercLogin|leclercAuthUrl|leclercRetryUrl|LeclercSessionDialog" "$SCREEN_TARGET"
+          echo "===== DriveScreen (diagnostic) ====="
+          sed -n '1,280p' "$SCREEN_TARGET"
 
       - name: Numero de version unique par build
         working-directory: ${{ steps.locate.outputs.dir }}
