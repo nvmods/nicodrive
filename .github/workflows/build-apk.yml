@@ -46,6 +46,7 @@ jobs:
           HISTORY_TARGET="$DIR/app/src/main/java/com/example/nicobudget/ui/LeclercHistoryDialog.kt"
           ENTITIES_TARGET="$DIR/app/src/main/java/com/example/nicobudget/data/model/DriveEntities.kt"
           DAO_TARGET="$DIR/app/src/main/java/com/example/nicobudget/data/db/DriveOrderDao.kt"
+          VM_TARGET="$DIR/app/src/main/java/com/example/nicobudget/data/model/BudgetViewModel.kt"
 
           for f in \
             fixes/DriveMailSync.kt \
@@ -56,11 +57,12 @@ jobs:
             fixes/DriveOrderDao.kt \
             fixes/patch_project.py \
             fixes/patch_history.py \
-            fixes/patch_history_layout.py; do
+            fixes/patch_history_layout.py \
+            fixes/patch_drive_dashboard.py; do
             test -f "$f" || { echo "$f introuvable"; exit 1; }
           done
 
-          for f in "$SYNC_TARGET" "$SCREEN_TARGET" "$STATS_TARGET" "$ENTITIES_TARGET" "$DAO_TARGET"; do
+          for f in "$SYNC_TARGET" "$SCREEN_TARGET" "$STATS_TARGET" "$ENTITIES_TARGET" "$DAO_TARGET" "$VM_TARGET"; do
             test -f "$f" || { echo "$f introuvable dans le ZIP"; exit 1; }
           done
 
@@ -74,12 +76,14 @@ jobs:
           python3 fixes/patch_project.py "$DIR"
           python3 fixes/patch_history.py "$DIR"
           python3 fixes/patch_history_layout.py "$DIR"
+          python3 fixes/patch_drive_dashboard.py "$DIR"
 
           echo "===== Vérification correctifs ====="
           grep -n -E "liveWebViewCookieFor|markBrowserLinkProcessed|includeHistorical" "$SYNC_TARGET"
           grep -n -E "leclercAuthUrl|onPdfCaptured|Reconnecter E.Leclerc|Synchroniser l'historique E.Leclerc|LeclercHistoryDialog" "$SCREEN_TARGET"
           grep -n -E "collectHistory|Scanner et importer|bon-de-commande.aspx|ddlFiltreAnnees|lbSuivant|navigationBarsPadding|zIndex" "$HISTORY_TARGET"
-          grep -n -E "Top 10 produits|getDriveTopProducts\(month, 10000\)|Lignes ventilées|Les pourcentages ci-dessous" "$STATS_TARGET"
+          grep -n -E "Historique global|Totaux par année|Dépenses par mois|getDriveTopProductsAll|getDriveTopProductsForYear" "$STATS_TARGET" "$VM_TARGET"
+          grep -n -E "getTopProductsForYear|getTopProductsAll|getSectionTotalsForYear|getSectionTotalsAll" "$DAO_TARGET"
           grep -n -E "ticketLeclerc|lineTotal" "$ENTITIES_TARGET" "$DAO_TARGET"
 
       - name: Numero de version unique par build
