@@ -51,6 +51,61 @@ jobs:
           cp fixes/DriveMailSync.kt "$SYNC_TARGET"
           cp fixes/LeclercSessionDialog.kt "$SESSION_TARGET"
 
+          # La session WebView est la source la plus fidèle après le reCAPTCHA.
+          # On garde les cookies chiffrés en secours, mais le téléchargement HTTP
+          # consulte aussi directement le CookieManager Android du WebView.
+          python3 - "$SYNC_TARGET" <<'PY'
+          from pathlib import Path
+          import sys
+
+          path = Path(sys.argv[1])
+          text = path.read_text(encoding="utf-8")
+
+          alias_import = 'import android.webkit.CookieManager as WebCookieManager\n'
+          if alias_import not in text:
+              marker = 'import android.content.Context\n'
+              if marker not in text:
+                  raise SystemExit('Import Context introuvable dans DriveMailSync')
+              text = text.replace(marker, marker + alias_import, 1)
+
+          helper_marker = '    private fun browserCookieFor(context: Context, url: String): String? {'
+          live_helper = '''    private fun liveWebViewCookieFor(url: String): String? = try {
+              WebCookieManager.getInstance().getCookie(url)
+                  ?.takeIf { it.isNotBlank() }
+          } catch (_: Exception) {
+              null
+          }
+
+          '''
+          if 'private fun liveWebViewCookieFor(' not in text:
+              if helper_marker not in text:
+                  raise SystemExit('Point insertion liveWebViewCookieFor introuvable')
+              text = text.replace(helper_marker, live_helper + helper_marker, 1)
+
+          old_cookie_block = '''            mergedCookieHeader(
+              browserCookieFor(context, current),
+              requestCookies
+          )?.let { conn.setRequestProperty("Cookie", it) }
+          '''
+          new_cookie_block = '''            val liveWebCookies = liveWebViewCookieFor(current)
+          val persistedWebCookies = browserCookieFor(context, current)
+          val webCookies = mergedCookieHeader(
+              liveWebCookies,
+              listOfNotNull(persistedWebCookies)
+          )
+          mergedCookieHeader(
+              webCookies,
+              requestCookies
+          )?.let { conn.setRequestProperty("Cookie", it) }
+          '''
+          if old_cookie_block in text:
+              text = text.replace(old_cookie_block, new_cookie_block, 1)
+          elif 'val liveWebCookies = liveWebViewCookieFor(current)' not in text:
+              raise SystemExit('Bloc Cookie HTTP introuvable')
+
+          path.write_text(text, encoding="utf-8")
+          PY
+
           python3 - "$SCREEN_TARGET" <<'PY'
           from pathlib import Path
           import sys
@@ -68,6 +123,13 @@ jobs:
                   1
               )
 
+          old_fun = '    fun syncFromMail() {\n'
+          new_fun = '    fun syncFromMail(afterLeclercLogin: Boolean = false) {\n'
+          if old_fun in text:
+              text = text.replace(old_fun, new_fun, 1)
+          elif new_fun not in text:
+              raise SystemExit('Fonction syncFromMail introuvable')
+
           old_call = '                    DriveMailSync.sync(context, config)'
           new_call = '                    DriveMailSync.sync(context, config, includeHistorical = true)'
           if old_call in text:
@@ -76,14 +138,27 @@ jobs:
               raise SystemExit('Appel DriveMailSync.sync introuvable')
 
           status_marker = '                status = "${report.mailsScanned} mails scannés, " +\n'
-          if 'leclercAuthUrl = report.authRequiredUrl' not in text:
+          auth_assignment = '''                // Après une connexion WebView on ne rouvre jamais
+          // immédiatement la fenêtre si Leclerc refuse encore la requête HTTP :
+          // cela évite la boucle connexion -> reprise -> connexion.
+          leclercAuthUrl = if (afterLeclercLogin) null else report.authRequiredUrl
+          '''
+          if 'leclercAuthUrl = if (afterLeclercLogin)' not in text:
               if status_marker not in text:
                   raise SystemExit('Point insertion rapport Leclerc introuvable')
-              text = text.replace(
-                  status_marker,
-                  '                leclercAuthUrl = report.authRequiredUrl\n' + status_marker,
-                  1
-              )
+              text = text.replace(status_marker, auth_assignment + status_marker, 1)
+
+          pdf_marker = '                report.pdfs.forEach { file ->\n'
+          post_auth_guard = '''                if (afterLeclercLogin && report.authRequiredUrl != null) {
+              status = (status ?: "") +
+                  "\\nSession E.Leclerc enregistrée, mais le téléchargement est encore protégé. " +
+                  "La fenêtre de connexion ne sera pas rouverte en boucle."
+          }
+          '''
+          if 'La fenêtre de connexion ne sera pas rouverte en boucle' not in text:
+              if pdf_marker not in text:
+                  raise SystemExit('Point insertion garde anti-boucle introuvable')
+              text = text.replace(pdf_marker, post_auth_guard + pdf_marker, 1)
 
           config_marker = '    if (showConfig) {\n'
           dialog_block = '''    leclercAuthUrl?.let { authUrl ->
@@ -93,7 +168,7 @@ jobs:
                   onSessionSaved = {
                       leclercAuthUrl = null
                       status = "Session E.Leclerc enregistrée. Reprise de l'historique…"
-                      syncFromMail()
+                      syncFromMail(afterLeclercLogin = true)
                   }
               )
           }
@@ -108,8 +183,8 @@ jobs:
           PY
 
           echo "===== Correctifs appliqués ====="
-          grep -n -E "includeHistorical|leclercAuthUrl|LeclercSessionDialog" "$SCREEN_TARGET"
-          grep -n -E "processed_mail_keys_v3|saveBrowserSession|authRequiredUrl" "$SYNC_TARGET"
+          grep -n -E "liveWebViewCookieFor|liveWebCookies|includeHistorical" "$SYNC_TARGET"
+          grep -n -E "afterLeclercLogin|leclercAuthUrl|LeclercSessionDialog" "$SCREEN_TARGET"
 
       - name: Numero de version unique par build
         working-directory: ${{ steps.locate.outputs.dir }}
