@@ -16,15 +16,15 @@ import androidx.room.PrimaryKey
 )
 data class DriveOrderEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val orderId: String,          // n° de commande Leclerc (unique)
-    val date: String,             // yyyy-MM-dd
-    val time: String?,            // HH:mm
+    val orderId: String,
+    val date: String,
+    val time: String?,
     val store: String?,
     val productCount: Int,
     val total: Double,
-    val savings: Double,          // économies/remises indiquées par Leclerc
-    val ticketLeclerc: Double,    // gains Ticket E.Leclerc
-    val expenseId: Long?          // dépense budget liée
+    val savings: Double,
+    val ticketLeclerc: Double,
+    val expenseId: Long?
 )
 
 @Entity(
@@ -41,22 +41,22 @@ data class DriveOrderEntity(
 )
 data class DriveOrderLineEntity(
     @PrimaryKey(autoGenerate = true) val id: Int = 0,
-    val orderId: Int,             // FK -> drive_orders.id
-    val section: String?,         // rayon Leclerc (Surgelés, Anti-Gaspi...)
+    val orderId: Int,
+    val section: String?,
     val label: String,
-    val quantity: Double,         // décimal pour les produits au poids
+    val quantity: Double,
     val unitPrice: Double,
     val total: Double
 )
 
 /** Agrégats pour les écrans de stats. */
 data class DriveMonthlyTotal(
-    val month: String,            // yyyy-MM
+    val month: String,
     val orderCount: Int,
-    val total: Double,            // total réellement payé
-    val savings: Double,          // économies/remises immédiates
-    val ticketLeclerc: Double,    // Ticket E.Leclerc gagné
-    val lineTotal: Double         // somme des lignes produits reconnues
+    val total: Double,
+    val savings: Double,
+    val ticketLeclerc: Double,
+    val lineTotal: Double
 )
 
 data class DriveProductStat(
@@ -86,10 +86,29 @@ data class ParsedDriveLine(
     val total: Double
 )
 
-/** Produit agrégé pour le classement "top produits" d'un mois. */
+/** Produit agrégé pour le classement des produits. */
 data class DriveTopProduct(
     val label: String,
     val quantity: Double,
     val total: Double,
     val orders: Int
+)
+
+/**
+ * Produit agrégé par mois. Sert aux comparaisons de prix à produit identique,
+ * à l'indice de panier comparable et aux alertes de hausse de prix.
+ */
+data class DriveProductMonthlyStat(
+    val month: String,
+    val label: String,
+    val quantity: Double,
+    val total: Double,
+    val orders: Int
+)
+
+/** Rayon agrégé par mois pour analyser la saisonnalité. */
+data class DriveSectionMonthlyStat(
+    val month: String,
+    val category: String,
+    val total: Double
 )
