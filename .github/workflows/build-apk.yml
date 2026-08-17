@@ -36,6 +36,21 @@ jobs:
           echo "Projet trouvé dans : $DIR"
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
 
+      - name: Appliquer le correctif Leclerc Drive
+        run: |
+          TARGET="${{ steps.locate.outputs.dir }}/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt"
+          if [ ! -f "fixes/DriveMailSync.kt" ]; then
+            echo "ERREUR : fixes/DriveMailSync.kt introuvable."
+            exit 1
+          fi
+          if [ ! -f "$TARGET" ]; then
+            echo "ERREUR : DriveMailSync.kt introuvable dans le projet extrait : $TARGET"
+            exit 1
+          fi
+          cp fixes/DriveMailSync.kt "$TARGET"
+          echo "Correctif appliqué : $TARGET"
+          grep -n "PREF_PROCESSED_MESSAGES\|MAX_RECOVERY_AGE_MS" "$TARGET"
+
       - name: Numero de version unique par build
         working-directory: ${{ steps.locate.outputs.dir }}
         run: |
