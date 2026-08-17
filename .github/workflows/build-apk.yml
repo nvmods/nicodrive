@@ -56,6 +56,7 @@ jobs:
           # consulte aussi directement le CookieManager Android du WebView.
           python3 - "$SYNC_TARGET" <<'PY'
           from pathlib import Path
+          import re
           import sys
 
           path = Path(sys.argv[1])
@@ -82,12 +83,11 @@ jobs:
                   raise SystemExit('Point insertion liveWebViewCookieFor introuvable')
               text = text.replace(helper_marker, live_helper + helper_marker, 1)
 
-          old_cookie_block = '''            mergedCookieHeader(
-              browserCookieFor(context, current),
-              requestCookies
-          )?.let { conn.setRequestProperty("Cookie", it) }
-          '''
-          new_cookie_block = '''            val liveWebCookies = liveWebViewCookieFor(current)
+          if 'val liveWebCookies = liveWebViewCookieFor(current)' not in text:
+              pattern = re.compile(
+                  r'mergedCookieHeader\(\s*browserCookieFor\(context,\s*current\),\s*requestCookies\s*\)\?\.let\s*\{\s*conn\.setRequestProperty\("Cookie",\s*it\)\s*\}'
+              )
+              replacement = '''val liveWebCookies = liveWebViewCookieFor(current)
           val persistedWebCookies = browserCookieFor(context, current)
           val webCookies = mergedCookieHeader(
               liveWebCookies,
@@ -96,12 +96,10 @@ jobs:
           mergedCookieHeader(
               webCookies,
               requestCookies
-          )?.let { conn.setRequestProperty("Cookie", it) }
-          '''
-          if old_cookie_block in text:
-              text = text.replace(old_cookie_block, new_cookie_block, 1)
-          elif 'val liveWebCookies = liveWebViewCookieFor(current)' not in text:
-              raise SystemExit('Bloc Cookie HTTP introuvable')
+          )?.let { conn.setRequestProperty("Cookie", it) }'''
+              text, count = pattern.subn(replacement, text, count=1)
+              if count != 1:
+                  raise SystemExit('Bloc Cookie HTTP introuvable')
 
           path.write_text(text, encoding="utf-8")
           PY
