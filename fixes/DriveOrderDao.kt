@@ -19,6 +19,12 @@ interface DriveOrderDao {
     @Query("SELECT * FROM drive_orders ORDER BY date DESC, id DESC")
     fun getAllOrders(): LiveData<List<DriveOrderEntity>>
 
+    @Query("SELECT * FROM drive_orders ORDER BY date DESC, id DESC")
+    suspend fun getAllOrdersNow(): List<DriveOrderEntity>
+
+    @Query("UPDATE drive_orders SET expenseId = :expenseId WHERE id = :orderRowId")
+    suspend fun setExpenseId(orderRowId: Int, expenseId: Long?)
+
     @Query("SELECT * FROM drive_order_lines WHERE orderId = :orderRowId ORDER BY id")
     suspend fun getLines(orderRowId: Int): List<DriveOrderLineEntity>
 
