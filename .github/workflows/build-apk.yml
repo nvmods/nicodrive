@@ -191,16 +191,16 @@ jobs:
                   raise SystemExit('Point insertion dialogue Leclerc introuvable')
               text = text.replace(config_marker, dialog_block + config_marker, 1)
 
-          manual_import_block = '''        item {
-              OutlinedButton(
-                  onClick = { launcher.launch(arrayOf("application/pdf")) },
-                  modifier = Modifier.fillMaxWidth()
-              ) {
-                  Text("Importer des PDF manuellement")
-              }
-          }
-          '''
-          retry_block = manual_import_block + '''
+          if 'Text("Reconnecter E.Leclerc")' not in text:
+              import_anchor = 'Text("Importer des PDF manuellement")'
+              anchor_pos = text.find(import_anchor)
+              if anchor_pos < 0:
+                  raise SystemExit('Bouton import PDF introuvable')
+              next_surface_item = text.find('\n        item {\n            Surface(', anchor_pos)
+              if next_surface_item < 0:
+                  raise SystemExit('Point insertion après import PDF introuvable')
+              retry_block = '''
+
           if (leclercRetryUrl != null) {
               item {
                   OutlinedButton(
@@ -213,10 +213,7 @@ jobs:
               }
           }
           '''
-          if 'Text("Reconnecter E.Leclerc")' not in text:
-              if manual_import_block not in text:
-                  raise SystemExit('Point insertion bouton Reconnecter E.Leclerc introuvable')
-              text = text.replace(manual_import_block, retry_block, 1)
+              text = text[:next_surface_item] + retry_block + text[next_surface_item:]
 
           path.write_text(text, encoding="utf-8")
           PY
