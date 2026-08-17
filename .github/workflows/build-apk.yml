@@ -36,63 +36,80 @@ jobs:
           echo "Projet trouvé dans : $DIR"
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
 
-      - name: Inspecter DriveScreen v1.4
+      - name: Appliquer la récupération Leclerc authentifiée
         run: |
-          SCREEN="${{ steps.locate.outputs.dir }}/app/src/main/java/com/example/nicobudget/ui/DriveScreen.kt"
-          echo "===== BEGIN DRIVESCREEN ====="
-          sed -n '1,380p' "$SCREEN"
-          echo "===== END DRIVESCREEN ====="
+          DIR="${{ steps.locate.outputs.dir }}"
+          SYNC_TARGET="$DIR/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt"
+          SCREEN_TARGET="$DIR/app/src/main/java/com/example/nicobudget/ui/DriveScreen.kt"
+          SESSION_TARGET="$DIR/app/src/main/java/com/example/nicobudget/ui/LeclercSessionDialog.kt"
 
-      - name: Appliquer le correctif Leclerc Drive
-        run: |
-          TARGET="${{ steps.locate.outputs.dir }}/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt"
-          if [ ! -f "fixes/DriveMailSync.kt" ]; then
-            echo "ERREUR : fixes/DriveMailSync.kt introuvable."
-            exit 1
-          fi
-          if [ ! -f "$TARGET" ]; then
-            echo "ERREUR : DriveMailSync.kt introuvable dans le projet extrait : $TARGET"
-            exit 1
-          fi
+          test -f fixes/DriveMailSync.kt || { echo "fixes/DriveMailSync.kt introuvable"; exit 1; }
+          test -f fixes/LeclercSessionDialog.kt || { echo "fixes/LeclercSessionDialog.kt introuvable"; exit 1; }
+          test -f "$SYNC_TARGET" || { echo "DriveMailSync.kt introuvable dans le ZIP"; exit 1; }
+          test -f "$SCREEN_TARGET" || { echo "DriveScreen.kt introuvable dans le ZIP"; exit 1; }
 
-          echo "===== API auto-sync présente dans la v1.4 ====="
-          grep -n -C 5 -E 'isAutoSync|setAutoSync|auto_sync' "$TARGET" || true
+          cp fixes/DriveMailSync.kt "$SYNC_TARGET"
+          cp fixes/LeclercSessionDialog.kt "$SESSION_TARGET"
 
-          cp fixes/DriveMailSync.kt "$TARGET"
-
-          python3 - "$TARGET" <<'PY'
+          python3 - "$SCREEN_TARGET" <<'PY'
           from pathlib import Path
           import sys
 
           path = Path(sys.argv[1])
           text = path.read_text(encoding="utf-8")
-          marker = "    private fun loadKeySet(context: Context, key: String): LinkedHashSet<String> {"
-          compat = '''    fun isAutoSync(context: Context): Boolean {
-              val p = prefs(context)
-              return when {
-                  p.contains("auto_sync_enabled") -> p.getBoolean("auto_sync_enabled", false)
-                  p.contains("auto_sync") -> p.getBoolean("auto_sync", false)
-                  else -> false
-              }
-          }
 
-          fun setAutoSync(context: Context, enabled: Boolean) {
-              prefs(context).edit()
-                  .putBoolean("auto_sync_enabled", enabled)
-                  .putBoolean("auto_sync", enabled)
-                  .apply()
+          state_marker = '    var autoSync by remember { mutableStateOf(DriveMailSync.isAutoSync(context)) }\n'
+          if 'var leclercAuthUrl by remember' not in text:
+              if state_marker not in text:
+                  raise SystemExit('Point insertion état Leclerc introuvable')
+              text = text.replace(
+                  state_marker,
+                  state_marker + '    var leclercAuthUrl by remember { mutableStateOf<String?>(null) }\n',
+                  1
+              )
+
+          old_call = '                    DriveMailSync.sync(context, config)'
+          new_call = '                    DriveMailSync.sync(context, config, includeHistorical = true)'
+          if old_call in text:
+              text = text.replace(old_call, new_call, 1)
+          elif new_call not in text:
+              raise SystemExit('Appel DriveMailSync.sync introuvable')
+
+          status_marker = '                status = "${report.mailsScanned} mails scannés, " +\n'
+          if 'leclercAuthUrl = report.authRequiredUrl' not in text:
+              if status_marker not in text:
+                  raise SystemExit('Point insertion rapport Leclerc introuvable')
+              text = text.replace(
+                  status_marker,
+                  '                leclercAuthUrl = report.authRequiredUrl\n' + status_marker,
+                  1
+              )
+
+          config_marker = '    if (showConfig) {\n'
+          dialog_block = '''    leclercAuthUrl?.let { authUrl ->
+              LeclercSessionDialog(
+                  initialUrl = authUrl,
+                  onDismiss = { leclercAuthUrl = null },
+                  onSessionSaved = {
+                      leclercAuthUrl = null
+                      status = "Session E.Leclerc enregistrée. Reprise de l'historique…"
+                      syncFromMail()
+                  }
+              )
           }
 
           '''
-          if "fun isAutoSync(" not in text:
-              if marker not in text:
-                  raise SystemExit("Point d'insertion auto-sync introuvable")
-              text = text.replace(marker, compat + marker, 1)
-              path.write_text(text, encoding="utf-8")
+          if 'LeclercSessionDialog(' not in text:
+              if config_marker not in text:
+                  raise SystemExit('Point insertion dialogue Leclerc introuvable')
+              text = text.replace(config_marker, dialog_block + config_marker, 1)
+
+          path.write_text(text, encoding="utf-8")
           PY
 
-          echo "Correctif appliqué : $TARGET"
-          grep -n -E "PREF_PROCESSED_MESSAGES|MAX_RECOVERY_AGE_MS|fun isAutoSync|fun setAutoSync" "$TARGET"
+          echo "===== Correctifs appliqués ====="
+          grep -n -E "includeHistorical|leclercAuthUrl|LeclercSessionDialog" "$SCREEN_TARGET"
+          grep -n -E "processed_mail_keys_v3|saveBrowserSession|authRequiredUrl" "$SYNC_TARGET"
 
       - name: Numero de version unique par build
         working-directory: ${{ steps.locate.outputs.dir }}
