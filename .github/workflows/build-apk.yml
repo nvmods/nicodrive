@@ -40,8 +40,10 @@ jobs:
         run: |
           DIR="${{ steps.locate.outputs.dir }}"
           SYNC_TARGET="$DIR/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt"
+          IMPORTER_TARGET="$DIR/app/src/main/java/com/example/nicobudget/drive/DriveImporter.kt"
           SCREEN_TARGET="$DIR/app/src/main/java/com/example/nicobudget/ui/DriveScreen.kt"
           STATS_TARGET="$DIR/app/src/main/java/com/example/nicobudget/ui/DriveStatsScreen.kt"
+          ALL_PRODUCTS_TARGET="$DIR/app/src/main/java/com/example/nicobudget/ui/AllProductsDialog.kt"
           SESSION_TARGET="$DIR/app/src/main/java/com/example/nicobudget/ui/LeclercSessionDialog.kt"
           HISTORY_TARGET="$DIR/app/src/main/java/com/example/nicobudget/ui/LeclercHistoryDialog.kt"
           ENTITIES_TARGET="$DIR/app/src/main/java/com/example/nicobudget/data/model/DriveEntities.kt"
@@ -50,26 +52,32 @@ jobs:
 
           for f in \
             fixes/DriveMailSync.kt \
+            fixes/DriveImporter.kt \
             fixes/LeclercSessionDialog.kt \
             fixes/LeclercHistoryDialog.kt \
             fixes/DriveStatsScreen.kt \
+            fixes/AllProductsDialog.kt \
             fixes/DriveEntities.kt \
             fixes/DriveOrderDao.kt \
             fixes/patch_project.py \
             fixes/patch_history.py \
             fixes/patch_history_layout.py \
-            fixes/patch_drive_dashboard.py; do
+            fixes/patch_drive_dashboard.py \
+            fixes/patch_drive_budget.py \
+            fixes/patch_all_products_stats.py; do
             test -f "$f" || { echo "$f introuvable"; exit 1; }
           done
 
-          for f in "$SYNC_TARGET" "$SCREEN_TARGET" "$STATS_TARGET" "$ENTITIES_TARGET" "$DAO_TARGET" "$VM_TARGET"; do
+          for f in "$SYNC_TARGET" "$IMPORTER_TARGET" "$SCREEN_TARGET" "$STATS_TARGET" "$ENTITIES_TARGET" "$DAO_TARGET" "$VM_TARGET"; do
             test -f "$f" || { echo "$f introuvable dans le ZIP"; exit 1; }
           done
 
           cp fixes/DriveMailSync.kt "$SYNC_TARGET"
+          cp fixes/DriveImporter.kt "$IMPORTER_TARGET"
           cp fixes/LeclercSessionDialog.kt "$SESSION_TARGET"
           cp fixes/LeclercHistoryDialog.kt "$HISTORY_TARGET"
           cp fixes/DriveStatsScreen.kt "$STATS_TARGET"
+          cp fixes/AllProductsDialog.kt "$ALL_PRODUCTS_TARGET"
           cp fixes/DriveEntities.kt "$ENTITIES_TARGET"
           cp fixes/DriveOrderDao.kt "$DAO_TARGET"
 
@@ -77,13 +85,18 @@ jobs:
           python3 fixes/patch_history.py "$DIR"
           python3 fixes/patch_history_layout.py "$DIR"
           python3 fixes/patch_drive_dashboard.py "$DIR"
+          python3 fixes/patch_drive_budget.py "$DIR"
+          python3 fixes/patch_all_products_stats.py "$DIR"
 
           echo "===== Vérification correctifs ====="
           grep -n -E "liveWebViewCookieFor|markBrowserLinkProcessed|includeHistorical" "$SYNC_TARGET"
+          grep -n -E "belongsToActiveBudgetCycle|reconcileCurrentBudget|hors budget courant" "$IMPORTER_TARGET"
           grep -n -E "leclercAuthUrl|onPdfCaptured|Reconnecter E.Leclerc|Synchroniser l'historique E.Leclerc|LeclercHistoryDialog" "$SCREEN_TARGET"
           grep -n -E "collectHistory|Scanner et importer|bon-de-commande.aspx|ddlFiltreAnnees|lbSuivant|navigationBarsPadding|zIndex" "$HISTORY_TARGET"
-          grep -n -E "Historique global|Totaux par année|Dépenses par mois|getDriveTopProductsAll|getDriveTopProductsForYear" "$STATS_TARGET" "$VM_TARGET"
-          grep -n -E "getTopProductsForYear|getTopProductsAll|getSectionTotalsForYear|getSectionTotalsAll" "$DAO_TARGET"
+          grep -n -E "Historique global|Totaux par année|Dépenses par mois|getDriveTopProductsAll|getDriveTopProductsForYear|Voir tous les produits|FREQUENCY" "$STATS_TARGET" "$VM_TARGET"
+          grep -n -E "AllProductsDialog|Fréquence|Rechercher un produit" "$ALL_PRODUCTS_TARGET"
+          grep -n -E "getAllOrdersNow|setExpenseId|getTopProductsForYear|getTopProductsAll|getSectionTotalsForYear|getSectionTotalsAll" "$DAO_TARGET"
+          grep -n -E "reconcileCurrentBudget" "$VM_TARGET"
           grep -n -E "ticketLeclerc|lineTotal" "$ENTITIES_TARGET" "$DAO_TARGET"
 
       - name: Numero de version unique par build
