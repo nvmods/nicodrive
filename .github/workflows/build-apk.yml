@@ -36,6 +36,13 @@ jobs:
           echo "Projet trouvé dans : $DIR"
           echo "dir=$DIR" >> "$GITHUB_OUTPUT"
 
+      - name: Inspecter DriveScreen v1.4
+        run: |
+          SCREEN="${{ steps.locate.outputs.dir }}/app/src/main/java/com/example/nicobudget/ui/DriveScreen.kt"
+          echo "===== BEGIN DRIVESCREEN ====="
+          sed -n '1,380p' "$SCREEN"
+          echo "===== END DRIVESCREEN ====="
+
       - name: Appliquer le correctif Leclerc Drive
         run: |
           TARGET="${{ steps.locate.outputs.dir }}/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt"
@@ -53,9 +60,6 @@ jobs:
 
           cp fixes/DriveMailSync.kt "$TARGET"
 
-          # La v1.4 appelle encore ces deux méthodes depuis MainActivity,
-          # DriveSyncWorker et DriveScreen. Le correctif réseau conserve donc
-          # explicitement cette API pour rester compatible avec le ZIP actuel.
           python3 - "$TARGET" <<'PY'
           from pathlib import Path
           import sys
