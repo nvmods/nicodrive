@@ -22,65 +22,122 @@ import kotlinx.coroutines.launch
 import kotlin.math.abs
 
 /**
- * Statistiques Leclerc Drive.
+ * Tableau de bord Leclerc Drive.
  *
- * Corrections b72 :
- * - le classement "Quantité" ne trie plus uniquement les 15 produits qui
- *   avaient déjà été sélectionnés par montant ; on charge tous les produits
- *   du mois, puis on calcule réellement le Top 10 selon le critère choisi ;
- * - le Top est explicitement limité à 10 produits ;
- * - la répartition par rayon est calculée sur les lignes produits reconnues,
- *   et l'écran affiche séparément le total réellement payé et l'écart éventuel
- *   entre ce total et la somme des lignes. On n'attribue donc plus implicitement
- *   un écart global à un rayon au hasard.
+ * La portée est sélectionnable : historique global, année complète ou mois.
+ * Les agrégats produits/rayons sont calculés directement en base sur la portée
+ * choisie ; les totaux mensuels restent basés sur le montant réellement payé.
  */
 @Composable
 fun DriveStatsScreen(viewModel: BudgetViewModel) {
     val scope = rememberCoroutineScope()
 
     var months by remember { mutableStateOf(emptyList<String>()) }
-    var selectedMonth by remember { mutableStateOf<String?>(null) }
+    var allMonthly by remember { mutableStateOf(emptyList<DriveMonthlyTotal>()) }
+    var selectedScope by remember { mutableStateOf("ALL") }
     var topProducts by remember { mutableStateOf(emptyList<DriveTopProduct>()) }
     var sections by remember { mutableStateOf(emptyList<CategoryExpenseTotal>()) }
-    var monthlySummary by remember { mutableStateOf<DriveMonthlyTotal?>(null) }
     var evolutionOf by remember { mutableStateOf<String?>(null) }
     var evolution by remember { mutableStateOf(emptyList<DriveProductStat>()) }
     var byQuantity by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(true) }
 
-    fun loadMonth(month: String) {
+    val years = remember(months) {
+        months.mapNotNull { it.takeIf { value -> value.length >= 4 }?.take(4) }
+            .distinct()
+            .sortedDescending()
+    }
+
+    fun loadScope(key: String) {
+        selectedScope = key
+        loading = true
         scope.launch {
-            // Le DAO classe par montant avant LIMIT. Pour que le mode Quantité
-            // soit exact, on récupère volontairement tous les produits du mois
-            // puis on applique le classement final côté UI.
-            topProducts = viewModel.getDriveTopProducts(month, 10000)
-            sections = viewModel.getDriveSectionTotals(month)
-            monthlySummary = viewModel.getDriveMonthlyTotals()
-                .firstOrNull { it.month == month }
+            try {
+                when {
+                    key == "ALL" -> {
+                        topProducts = viewModel.getDriveTopProductsAll(10000)
+                        sections = viewModel.getDriveSectionTotalsAll()
+                    }
+                    key.length == 4 -> {
+                        topProducts = viewModel.getDriveTopProductsForYear(key, 10000)
+                        sections = viewModel.getDriveSectionTotalsForYear(key)
+                    }
+                    else -> {
+                        topProducts = viewModel.getDriveTopProducts(key, 10000)
+                        sections = viewModel.getDriveSectionTotals(key)
+                    }
+                }
+            } finally {
+                loading = false
+            }
         }
     }
 
     LaunchedEffect(Unit) {
         months = viewModel.getDriveMonths()
-        months.firstOrNull()?.let {
-            selectedMonth = it
-            loadMonth(it)
+        allMonthly = viewModel.getDriveMonthlyTotals()
+        try {
+            topProducts = viewModel.getDriveTopProductsAll(10000)
+            sections = viewModel.getDriveSectionTotalsAll()
+        } finally {
+            loading = false
         }
+    }
+
+    val periodMonthly = remember(allMonthly, selectedScope) {
+        when {
+            selectedScope == "ALL" -> allMonthly
+            selectedScope.length == 4 -> allMonthly.filter { it.month.startsWith(selectedScope) }
+            else -> allMonthly.filter { it.month == selectedScope }
+        }
+    }
+
+    val periodLabel = when {
+        selectedScope == "ALL" -> "Historique global"
+        selectedScope.length == 4 -> "Année $selectedScope"
+        else -> selectedScope
+    }
+
+    val activeYear = when {
+        selectedScope == "ALL" -> null
+        selectedScope.length >= 4 -> selectedScope.take(4)
+        else -> null
+    }
+
+    val monthsForActiveYear = remember(months, activeYear) {
+        if (activeYear == null) emptyList()
+        else months.filter { it.startsWith(activeYear) }
     }
 
     // ---------------- Dialogue d'évolution d'un produit ----------------
     evolutionOf?.let { label ->
+        val visibleEvolution = evolution.filter { e ->
+            when {
+                selectedScope == "ALL" -> true
+                selectedScope.length == 4 -> e.month.startsWith(selectedScope)
+                else -> e.month == selectedScope
+            }
+        }
+
         AlertDialog(
             onDismissRequest = { evolutionOf = null },
             title = {
-                Text(label, style = MaterialTheme.typography.titleMedium)
+                Column {
+                    Text(label, style = MaterialTheme.typography.titleMedium)
+                    Text(
+                        periodLabel,
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             },
             text = {
-                if (evolution.isEmpty()) {
-                    Text("Pas d'historique pour ce produit.")
+                if (visibleEvolution.isEmpty()) {
+                    Text("Pas d'historique pour ce produit sur cette période.")
                 } else {
-                    val maxTotal = evolution.maxOf { it.total }
+                    val maxTotal = visibleEvolution.maxOf { it.total }
                     Column {
-                        evolution.forEach { e ->
+                        visibleEvolution.forEach { e ->
                             Column(Modifier.padding(vertical = 4.dp)) {
                                 Row(
                                     Modifier.fillMaxWidth(),
@@ -97,8 +154,7 @@ fun DriveStatsScreen(viewModel: BudgetViewModel) {
                                 }
                                 LinearProgressIndicator(
                                     progress = {
-                                        if (maxTotal > 0)
-                                            (e.total / maxTotal).toFloat() else 0f
+                                        if (maxTotal > 0) (e.total / maxTotal).toFloat() else 0f
                                     },
                                     modifier = Modifier.fillMaxWidth(),
                                     color = MaterialTheme.colorScheme.secondary,
@@ -129,24 +185,131 @@ fun DriveStatsScreen(viewModel: BudgetViewModel) {
             return@Column
         }
 
-        // ---------------- Sélecteur de mois ----------------
+        // ---------------- Portée globale / année ----------------
+        Text(
+            "Période",
+            style = MaterialTheme.typography.labelLarge,
+            fontWeight = FontWeight.SemiBold
+        )
         LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-            items(months) { month ->
+            item {
                 FilterChip(
-                    selected = month == selectedMonth,
-                    onClick = {
-                        selectedMonth = month
-                        loadMonth(month)
-                    },
-                    label = { Text(month) }
+                    selected = selectedScope == "ALL",
+                    onClick = { loadScope("ALL") },
+                    label = { Text("Global") }
                 )
+            }
+            items(years) { year ->
+                FilterChip(
+                    selected = selectedScope == year,
+                    onClick = { loadScope(year) },
+                    label = { Text(year) }
+                )
+            }
+        }
+
+        // Une fois une année choisie, on garde le détail mensuel disponible.
+        activeYear?.let { year ->
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                item {
+                    FilterChip(
+                        selected = selectedScope == year,
+                        onClick = { loadScope(year) },
+                        label = { Text("Année entière") }
+                    )
+                }
+                items(monthsForActiveYear) { month ->
+                    FilterChip(
+                        selected = selectedScope == month,
+                        onClick = { loadScope(month) },
+                        label = { Text(month.substringAfter('-')) }
+                    )
+                }
+            }
+        }
+
+        if (loading) {
+            LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+        }
+
+        // ---------------- Synthèse de la période ----------------
+        val orderCount = periodMonthly.sumOf { it.orderCount }
+        val paidTotal = periodMonthly.sumOf { it.total }
+        val savings = periodMonthly.sumOf { it.savings }
+        val ticket = periodMonthly.sumOf { it.ticketLeclerc }
+        val advantages = savings + ticket
+        val lineTotal = periodMonthly.sumOf { it.lineTotal }
+        val gap = paidTotal - lineTotal
+        val averageMonth = if (periodMonthly.isNotEmpty()) paidTotal / periodMonthly.size else 0.0
+        val averageOrder = if (orderCount > 0) paidTotal / orderCount else 0.0
+
+        SectionCard(Icons.Default.BarChart, "Synthèse — $periodLabel") {
+            StatLine("Commandes", orderCount.toString())
+            StatLine("Total payé", paidTotal.eur(), strong = true)
+            StatLine("Panier moyen", averageOrder.eur())
+            if (periodMonthly.size > 1) {
+                StatLine("Moyenne par mois", averageMonth.eur())
+            }
+            if (savings > 0.0) StatLine("Économies immédiates", savings.eur())
+            if (ticket > 0.0) StatLine("Ticket E.Leclerc gagné", ticket.eur())
+            if (advantages > 0.0) StatLine("Avantages totaux", advantages.eur(), strong = true)
+            StatLine("Lignes produits reconnues", lineTotal.eur())
+            if (abs(gap) >= 0.01) {
+                StatLine("Écart total / lignes", gap.eur())
+            }
+        }
+
+        // ---------------- Totaux annuels en mode global ----------------
+        if (selectedScope == "ALL") {
+            val yearly = periodMonthly
+                .groupBy { it.month.take(4) }
+                .mapValues { (_, values) ->
+                    Triple(
+                        values.sumOf { it.orderCount },
+                        values.sumOf { it.total },
+                        values.sumOf { it.savings + it.ticketLeclerc }
+                    )
+                }
+                .toList()
+                .sortedByDescending { it.first }
+            val maxYearTotal = yearly.maxOfOrNull { it.second.second } ?: 0.0
+
+            SectionCard(Icons.Default.BarChart, "Totaux par année") {
+                yearly.forEach { (year, data) ->
+                    val (count, total, adv) = data
+                    Column(Modifier.padding(vertical = 5.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(year, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "$count commande(s) · ${adv.eur()} d'avantages",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                            Text(total.eur(), fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(3.dp))
+                        LinearProgressIndicator(
+                            progress = {
+                                if (maxYearTotal > 0) (total / maxYearTotal).toFloat() else 0f
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    }
+                }
             }
         }
 
         // ---------------- Top 10 produits ----------------
         SectionCard(
             Icons.Default.EmojiEvents,
-            "Top 10 produits",
+            "Top 10 produits — $periodLabel",
             trailing = {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Text(
@@ -162,13 +325,11 @@ fun DriveStatsScreen(viewModel: BudgetViewModel) {
             }
         ) {
             if (topProducts.isEmpty()) {
-                EmptyHint("Aucun produit sur ce mois.")
+                EmptyHint("Aucun produit sur cette période.")
             } else {
                 val ranked = (
-                    if (byQuantity)
-                        topProducts.sortedByDescending { it.quantity }
-                    else
-                        topProducts.sortedByDescending { it.total }
+                    if (byQuantity) topProducts.sortedByDescending { it.quantity }
+                    else topProducts.sortedByDescending { it.total }
                 ).take(10)
 
                 val maxValue = if (byQuantity)
@@ -177,7 +338,7 @@ fun DriveStatsScreen(viewModel: BudgetViewModel) {
                     ranked.maxOfOrNull { it.total } ?: 0.0
 
                 Text(
-                    "Classement calculé sur toutes les lignes produits reconnues du mois. " +
+                    "Classement calculé sur toutes les lignes reconnues de la période. " +
                         "Tape un produit pour voir son évolution.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -216,18 +377,16 @@ fun DriveStatsScreen(viewModel: BudgetViewModel) {
                                 fontWeight = FontWeight.SemiBold
                             )
                         }
-                        if (p.orders > 1) {
-                            Text(
-                                "${p.orders} commandes",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
+                        Text(
+                            "${p.orders} commande(s)",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
                         Spacer(Modifier.height(3.dp))
                         LinearProgressIndicator(
                             progress = {
-                                val v = if (byQuantity) p.quantity else p.total
-                                if (maxValue > 0) (v / maxValue).toFloat() else 0f
+                                val value = if (byQuantity) p.quantity else p.total
+                                if (maxValue > 0) (value / maxValue).toFloat() else 0f
                             },
                             modifier = Modifier.fillMaxWidth(),
                             color = MaterialTheme.colorScheme.secondary,
@@ -239,52 +398,46 @@ fun DriveStatsScreen(viewModel: BudgetViewModel) {
         }
 
         // ---------------- Répartition par rayon ----------------
-        SectionCard(Icons.Default.Storefront, "Répartition par rayon") {
+        SectionCard(Icons.Default.Storefront, "Répartition par rayon — $periodLabel") {
             if (sections.isEmpty()) {
-                EmptyHint("Aucune donnée de rayon sur ce mois.")
+                EmptyHint("Aucune donnée de rayon sur cette période.")
             } else {
-                val parsedLineTotal = sections.sumOf { it.total }
-                val paidTotal = monthlySummary?.total ?: parsedLineTotal
-                val storedLineTotal = monthlySummary?.lineTotal ?: parsedLineTotal
-                val gap = paidTotal - storedLineTotal
+                val parsedTotal = sections.sumOf { it.total }
 
                 Text(
-                    "Lignes ventilées : ${storedLineTotal.eur()} · Total payé : ${paidTotal.eur()}",
+                    "Lignes ventilées : ${lineTotal.eur()} · Total payé : ${paidTotal.eur()}",
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.SemiBold
                 )
                 Text(
-                    "Les pourcentages ci-dessous portent sur les lignes produits reconnues, " +
-                        "afin de ne pas fausser les rayons avec un écart global.",
+                    "Les pourcentages portent sur les lignes produits reconnues.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
                 if (abs(gap) >= 0.01) {
                     Text(
-                        "Écart total/lignes : ${gap.eur()} " +
-                            "(remises globales, frais ou lignes non reconnues)",
+                        "Écart total/lignes : ${gap.eur()} (remises globales, frais ou lignes non reconnues)",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.secondary
                     )
                 }
                 Spacer(Modifier.height(6.dp))
 
-                sections.forEach { s ->
-                    val percent = if (parsedLineTotal > 0)
-                        s.total / parsedLineTotal * 100.0 else 0.0
+                sections.forEach { section ->
+                    val percent = if (parsedTotal > 0) section.total / parsedTotal * 100.0 else 0.0
                     Column(Modifier.padding(vertical = 5.dp)) {
                         Row(
                             Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween
                         ) {
                             Text(
-                                s.category,
+                                section.category,
                                 style = MaterialTheme.typography.bodyMedium,
                                 modifier = Modifier.weight(1f)
                             )
                             Spacer(Modifier.width(8.dp))
                             Text(
-                                "%s (%.1f %%)".format(s.total.eur(), percent),
+                                "%s (%.1f %%)".format(section.total.eur(), percent),
                                 style = MaterialTheme.typography.bodyMedium,
                                 fontWeight = FontWeight.SemiBold
                             )
@@ -292,8 +445,7 @@ fun DriveStatsScreen(viewModel: BudgetViewModel) {
                         Spacer(Modifier.height(3.dp))
                         LinearProgressIndicator(
                             progress = {
-                                if (parsedLineTotal > 0)
-                                    (s.total / parsedLineTotal).toFloat() else 0f
+                                if (parsedTotal > 0) (section.total / parsedTotal).toFloat() else 0f
                             },
                             modifier = Modifier.fillMaxWidth(),
                             color = MaterialTheme.colorScheme.tertiary,
@@ -303,6 +455,77 @@ fun DriveStatsScreen(viewModel: BudgetViewModel) {
                 }
             }
         }
+
+        // ---------------- Historique mensuel complet ----------------
+        if (periodMonthly.isNotEmpty()) {
+            val maxMonthTotal = periodMonthly.maxOfOrNull { it.total } ?: 0.0
+            SectionCard(Icons.Default.BarChart, "Dépenses par mois — $periodLabel") {
+                Text(
+                    if (selectedScope == "ALL")
+                        "Tous les mois disponibles dans l'historique importé."
+                    else
+                        "Détail mensuel de la période sélectionnée.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(6.dp))
+
+                periodMonthly.forEach { month ->
+                    val adv = month.savings + month.ticketLeclerc
+                    Column(Modifier.padding(vertical = 5.dp)) {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column {
+                                Text(month.month, fontWeight = FontWeight.SemiBold)
+                                Text(
+                                    "${month.orderCount} commande(s) · panier moyen ${
+                                        if (month.orderCount > 0) (month.total / month.orderCount).eur() else 0.0.eur()
+                                    }",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                if (adv > 0.0) {
+                                    Text(
+                                        "Avantages : ${adv.eur()}",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.secondary
+                                    )
+                                }
+                            }
+                            Text(month.total.eur(), fontWeight = FontWeight.Bold)
+                        }
+                        Spacer(Modifier.height(3.dp))
+                        LinearProgressIndicator(
+                            progress = {
+                                if (maxMonthTotal > 0) (month.total / maxMonthTotal).toFloat() else 0f
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            color = MaterialTheme.colorScheme.primary,
+                            trackColor = MaterialTheme.colorScheme.surfaceVariant
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun StatLine(label: String, value: String, strong: Boolean = false) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 3.dp),
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Text(label, style = MaterialTheme.typography.bodyMedium)
+        Text(
+            value,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (strong) FontWeight.Bold else FontWeight.SemiBold
+        )
     }
 }
 
