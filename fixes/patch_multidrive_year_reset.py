@@ -99,6 +99,7 @@ for patch_name in (
     "patch_food_render_perf.py",
     "patch_budget_stats_and_food_rules.py",
     "patch_budget_stats_scroll.py",
+    "patch_data_management.py",
     "inspect_navigation.py",
 ):
     patch = Path(__file__).with_name(patch_name)
