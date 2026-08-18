@@ -7,7 +7,6 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Window
@@ -20,10 +19,11 @@ import javax.swing.filechooser.FileNameExtensionFilter
 internal enum class Section(val label: String, val glyph: String) {
     DASHBOARD("Tableau de bord", "⌂"),
     EXPENSES("Dépenses", "€"),
+    BUDGET("Budget & récurrents", "¤"),
     ARCHIVES("Archives", "▣"),
     STATS("Statistiques", "▥"),
     DRIVE("Leclerc Drive", "▤"),
-    MENUS("Menus", "☷"),
+    MENUS("Menus & courses", "☷"),
     DATA("Données & backup", "⇄"),
     SYNC("Synchronisation", "↔")
 }
@@ -49,7 +49,7 @@ internal class AppModel {
 }
 
 fun main() = application {
-    val state = rememberWindowState(width = 1360.dp, height = 860.dp)
+    val state = rememberWindowState(width = 1440.dp, height = 900.dp)
     Window(
         onCloseRequest = ::exitApplication,
         title = "NicoBudget Desktop",
@@ -68,7 +68,7 @@ private fun NicoBudgetDesktop(model: AppModel) {
 
     Row(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
         Surface(
-            modifier = Modifier.fillMaxHeight().width(235.dp),
+            modifier = Modifier.fillMaxHeight().width(245.dp),
             tonalElevation = 2.dp,
             shadowElevation = 2.dp
         ) {
@@ -77,7 +77,7 @@ private fun NicoBudgetDesktop(model: AppModel) {
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text("NicoBudget", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text("Desktop 0.1", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Desktop 0.2", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(12.dp))
 
                 Section.entries.forEach { item ->
@@ -106,9 +106,7 @@ private fun NicoBudgetDesktop(model: AppModel) {
                         val file = chooseBackupToOpen()
                         if (file != null) {
                             runCatching { DesktopStore.importBackup(file) }
-                                .onSuccess { summary ->
-                                    model.refresh("Backup importé : ${summary.tables} tables, ${summary.rows} lignes.")
-                                }
+                                .onSuccess { summary -> model.refresh("Backup importé : ${summary.tables} tables, ${summary.rows} lignes.") }
                                 .onFailure { model.fail("Import impossible : ${it.message}") }
                         }
                     },
@@ -149,11 +147,12 @@ private fun NicoBudgetDesktop(model: AppModel) {
                 } else {
                     when (model.section) {
                         Section.DASHBOARD -> DashboardScreen(model.revision)
-                        Section.EXPENSES -> ExpensesScreen(model.revision)
-                        Section.ARCHIVES -> ArchivesScreen(model)
+                        Section.EXPENSES -> ExpensesParityScreen(model)
+                        Section.BUDGET -> BudgetManagementScreen(model)
+                        Section.ARCHIVES -> ArchivesParityScreen(model)
                         Section.STATS -> BudgetStatsDesktopScreen(model.revision)
                         Section.DRIVE -> DriveDesktopScreen(model.revision)
-                        Section.MENUS -> MenusDesktopScreen(model.revision)
+                        Section.MENUS -> MenusParityScreen(model)
                         Section.DATA -> DataDesktopScreen(model)
                         Section.SYNC -> SyncDesktopScreen()
                     }
