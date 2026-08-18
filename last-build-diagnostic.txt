@@ -1,0 +1,65 @@
+run_id=32168451955
+run_number=154
+head_sha=f264636bff1dc4161bab566b574e028c9336cfc0
+timestamp=2026-08-18T17:58:31Z
+
+===== PATCH =====
+Correctifs projet appliqués :
+- projet/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt
+- projet/app/src/main/java/com/example/nicobudget/ui/DriveScreen.kt
+Historique batch intégré dans projet/app/src/main/java/com/example/nicobudget/ui/DriveScreen.kt
+Layout historique corrigé : projet/app/src/main/java/com/example/nicobudget/ui/LeclercHistoryDialog.kt
+ViewModel stats Drive étendu : projet/app/src/main/java/com/example/nicobudget/data/model/BudgetViewModel.kt
+Réconciliation budget Drive ajoutée : projet/app/src/main/java/com/example/nicobudget/data/model/BudgetViewModel.kt
+Catalogue complet des produits ajouté : projet/app/src/main/java/com/example/nicobudget/ui/DriveStatsScreen.kt
+Stats avancées Drive intégrées : projet/app/src/main/java/com/example/nicobudget/ui/DriveStatsScreen.kt
+Insights historiques ajoutés dans projet/app/src/main/java/com/example/nicobudget/data/model/BudgetViewModel.kt et projet/app/src/main/java/com/example/nicobudget/ui/DriveStatsScreen.kt
+Audit statistiques appliqué : périodes complètes, comparaison annuelle équitable et graphes à base zéro.
+Export XLSX intégré dans projet/app/src/main/java/com/example/nicobudget/ui/DriveStatsScreen.kt
+Exporteur XLSX copié vers projet/app/src/main/java/com/example/nicobudget/export/DataXlsxExporter.kt
+Normalisation URL mails Leclerc appliquee dans projet/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt
+Fallback WebView pour HTTP 200 HTML appliqué dans projet/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt
+Cycle budget Drive aligné sur 27->27 dans projet/app/src/main/java/com/example/nicobudget/drive/DriveImporter.kt
+Réconciliation budget après batch ajoutée dans projet/app/src/main/java/com/example/nicobudget/ui/LeclercHistoryDialog.kt
+Cycle budget 27->27 corrigé à la source dans projet/app/src/main/java/com/example/nicobudget/data/model/BudgetViewModel.kt
+Normalisation produits Drive appliquée dans projet/app/src/main/java/com/example/nicobudget/data/model/BudgetViewModel.kt
+Normaliseur copié vers projet/app/src/main/java/com/example/nicobudget/data/model/DriveProductNormalizer.kt
+Analyse habitudes alimentaires intégrée : projet/app/src/main/java/com/example/nicobudget/ui/DriveFoodInsights.kt
+Modèle/classificateur copié : projet/app/src/main/java/com/example/nicobudget/data/model/DriveFoodModels.kt
+Menu planner V2 intégré : projet/app/src/main/java/com/example/nicobudget/ui/DriveMenuPlanner.kt
+- historique prix réel (date + unitPrice)
+- génération 7 dîners + verrouillage/régénération
+- liste consolidée + estimation coût + copie presse-papiers
+Menu planner ajusté : variété accompagnements + coût hebdomadaire consolidé dans projet/app/src/main/java/com/example/nicobudget/ui/DriveMenuPlanner.kt
+Menu planner V3 installé : projet/app/src/main/java/com/example/nicobudget/ui/DriveMenuPlanner.kt
+- 14 créneaux midi/soir
+- 0 à 8 convives par créneau
+- incompatibilités avec substitutions automatiques
+- liste de courses consolidée sur tous les repas actifs
+V4 Menus & courses appliquée :
+- destination dédiée dans le drawer
+- profils personnes avec incompatibilités individuelles
+- affectation des profils par créneau midi/soir
+- alternatives proportionnées seulement aux personnes concernées
+- cache des lignes Drive invalidé automatiquement quand le nombre de lignes change
+- générateur retiré des statistiques
+Optimisations rendu planner appliquées dans projet/app/src/main/java/com/example/nicobudget/ui/DriveMenuPlanner.kt
+- catalogue + affinités calculés hors thread UI et mis en cache
+- liste de courses calculée hors thread UI
+- estimations des 14 cartes mémoïsées
+- détails de courses repliés par défaut
+Panneaux de stats performants appliqués : projet/app/src/main/java/com/example/nicobudget/ui/DriveStatsScreen.kt
+- Essentiel : synthèse + Top produits + rayons
+- Alimentation : classification alimentaire seulement
+- Tendances : graphes/comparaisons/insights seulement
+- Historique : totaux annuels + mois seulement
+Bloc calcul alimentaire DriveFoodHabits non reconnu
+Reset d'année multi-Drive appliqué dans projet/app/src/main/java/com/example/nicobudget/ui/LeclercHistoryDialog.kt
+Traceback (most recent call last):
+  File "/home/runner/work/nicodrive/nicodrive/fixes/patch_multidrive_year_reset.py", line 105, in <module>
+    subprocess.run([sys.executable, str(patch), str(root)], check=True)
+  File "/usr/lib/python3.12/subprocess.py", line 571, in run
+    raise CalledProcessError(retcode, process.args,
+subprocess.CalledProcessError: Command '['/usr/bin/python3', '/home/runner/work/nicodrive/nicodrive/fixes/patch_food_render_perf.py', 'projet']' returned non-zero exit status 1.
+
+===== BUILD =====
