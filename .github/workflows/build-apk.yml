@@ -5,6 +5,9 @@ on:
     branches: [ main ]
   workflow_dispatch: {}
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -38,6 +41,7 @@ jobs:
 
       - name: Appliquer les correctifs Drive
         run: |
+          exec > >(tee patch.log) 2>&1
           DIR="${{ steps.locate.outputs.dir }}"
           SYNC_TARGET="$DIR/app/src/main/java/com/example/nicobudget/drive/DriveMailSync.kt"
           IMPORTER_TARGET="$DIR/app/src/main/java/com/example/nicobudget/drive/DriveImporter.kt"
@@ -107,12 +111,12 @@ jobs:
           grep -n -E "belongsToActiveBudgetCycle|reconcileCurrentBudget|hors budget courant" "$IMPORTER_TARGET"
           grep -n -E "leclercAuthUrl|onPdfCaptured|Reconnecter E.Leclerc|Synchroniser l'historique E.Leclerc|LeclercHistoryDialog" "$SCREEN_TARGET"
           grep -n -E "collectAllDrives|Scanner les 2 Drives|AnneeSelectionnee|sortedDescending|année .* non chargée" "$HISTORY_TARGET"
-          grep -n -E "Historique global|Totaux enregistrés par année|Moyenne par mois complet|Voir tous les produits|FREQUENCY|DriveMonthComparison|DriveTrendCharts|ProductPriceEvolutionChart|DriveHistoricalInsights" "$STATS_TARGET" "$VM_TARGET"
+          grep -n -E "Historique global|Totaux enregistrés par année|Moyenne par mois complet|Voir tous les produits|FREQUENCY|DriveMonthComparison|DriveTrendCharts|ProductPriceEvolutionChart|DriveHistoricalInsights|DriveFoodHabits" "$STATS_TARGET" "$VM_TARGET"
           grep -n -E "mois en cours est volontairement exclu|zeroBaseline|Prix moyen / unité|Comparatif" "$ADV_STATS_TARGET"
           grep -n -E "Évolution annuelle comparable|mêmes mois terminés|completeMonthly|Inflation de ton panier comparable|Tendance lissée|Saisonnalité par rayon|Hausses de prix à surveiller" "$INSIGHTS_TARGET"
           grep -n -E "AllProductsDialog|Fréquence|Rechercher un produit" "$ALL_PRODUCTS_TARGET"
-          grep -n -E "getAllOrdersNow|setExpenseId|getTopProductsForYear|getTopProductsAll|getSectionTotalsForYear|getSectionTotalsAll|getProductMonthlyStatsAll|getSectionMonthlyStatsAll" "$DAO_TARGET"
-          grep -n -E "getDriveProductMonthlyStatsAll|getDriveSectionMonthlyStatsAll|reconcileCurrentBudget" "$VM_TARGET"
+          grep -n -E "getAllOrdersNow|setExpenseId|getTopProductsForYear|getTopProductsAll|getSectionTotalsForYear|getSectionTotalsAll|getProductMonthlyStatsAll|getSectionMonthlyStatsAll|getFoodAnalysisLines" "$DAO_TARGET"
+          grep -n -E "getDriveProductMonthlyStatsAll|getDriveSectionMonthlyStatsAll|getDriveFoodAnalysisLines|reconcileCurrentBudget" "$VM_TARGET"
           grep -n -E "DriveProductMonthlyStat|DriveSectionMonthlyStat|ticketLeclerc|lineTotal" "$ENTITIES_TARGET" "$DAO_TARGET"
 
       - name: Numero de version unique par build
@@ -134,6 +138,7 @@ jobs:
           gradle-version: '8.10.2'
 
       - name: Build debug APK
+        id: android_build
         shell: bash
         working-directory: ${{ steps.locate.outputs.dir }}
         run: |
@@ -145,6 +150,27 @@ jobs:
           echo "===== ERREURS PRINCIPALES ====="
           grep -nE '(^e: |\[ksp\]|What went wrong|Execution failed|Caused by:|error:)' build.log | head -80 || true
           exit "$STATUS"
+
+      - name: Sauver le diagnostic en cas d'échec
+        if: failure()
+        run: |
+          {
+            echo "run_id=${{ github.run_id }}"
+            echo "run_number=${{ github.run_number }}"
+            echo "head_sha=${{ github.sha }}"
+            echo "timestamp=$(date -u +%FT%TZ)"
+            echo
+            echo "===== PATCH ====="
+            tail -n 120 patch.log 2>/dev/null || true
+            echo
+            echo "===== BUILD ====="
+            tail -n 220 "${{ steps.locate.outputs.dir }}/build.log" 2>/dev/null || true
+          } > last-build-diagnostic.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add last-build-diagnostic.txt
+          git commit -m "Update failed build diagnostic [skip ci]" || true
+          git push || true
 
       - name: Publier l'APK
         uses: actions/upload-artifact@v4
