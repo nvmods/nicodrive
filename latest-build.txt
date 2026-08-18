@@ -1,5 +1,5 @@
-run_id=32152272777
-run_number=145
-head_sha=7d2403c7d7a0181b727cdef9f0d9823160615c96
+run_id=32152320079
+run_number=146
+head_sha=4e7009112c3b51b66e6be28a4f7806ddde9736a5
 artifact=NicoBudget-debug-apk
 release_asset=https://github.com/nvmods/nicodrive/releases/download/latest-debug/NicoBudget-latest-debug.apk
