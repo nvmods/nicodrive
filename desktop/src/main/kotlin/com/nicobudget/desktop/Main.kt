@@ -152,7 +152,7 @@ private fun NicoBudgetDesktop(model: AppModel) {
                         Section.ARCHIVES -> ArchivesParityScreen(model)
                         Section.STATS -> AnalyticsV03Screen(model)
                         Section.DRIVE -> DriveV03Screen(model)
-                        Section.MENUS -> MenusParityScreen(model)
+                        Section.MENUS -> MenusV03Screen(model)
                         Section.DATA -> DataV03Screen(model)
                         Section.SYNC -> SyncDesktopScreen()
                     }
