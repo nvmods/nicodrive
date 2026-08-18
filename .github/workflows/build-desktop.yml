@@ -46,13 +46,22 @@ jobs:
           Get-Command candle.exe -ErrorAction SilentlyContinue | Format-List
 
       - name: Compile Desktop
-        run: gradle -p desktop compileKotlin --stacktrace
+        shell: pwsh
+        run: |
+          gradle -p desktop compileKotlin --stacktrace 2>&1 | Tee-Object -FilePath desktop-compile.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build portable image
-        run: gradle -p desktop createDistributable --stacktrace
+        shell: pwsh
+        run: |
+          gradle -p desktop createDistributable --stacktrace 2>&1 | Tee-Object -FilePath desktop-portable.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build MSI and EXE
-        run: gradle -p desktop packageMsi packageExe --stacktrace
+        shell: pwsh
+        run: |
+          gradle -p desktop packageMsi packageExe --stacktrace 2>&1 | Tee-Object -FilePath desktop-package.log
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Package portable ZIP
         shell: pwsh
@@ -109,3 +118,27 @@ jobs:
             git commit -m "Update latest Desktop build marker [skip ci]"
             git push
           fi
+
+      - name: Commit Desktop failure diagnostic
+        if: failure()
+        shell: pwsh
+        run: |
+          $parts = @()
+          foreach ($file in @('desktop-compile.log','desktop-portable.log','desktop-package.log')) {
+            if (Test-Path $file) {
+              $parts += "===== $file ====="
+              $parts += Get-Content $file -Tail 220
+            }
+          }
+          @(
+            "run_id=${{ github.run_id }}",
+            "run_number=${{ github.run_number }}",
+            "head_sha=${{ github.sha }}",
+            "timestamp=$([DateTime]::UtcNow.ToString('o'))",
+            ""
+          ) + $parts | Set-Content -Encoding utf8 last-desktop-build-diagnostic.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add last-desktop-build-diagnostic.txt
+          git commit -m "Update failed Desktop build diagnostic [skip ci]" 2>$null
+          if ($LASTEXITCODE -eq 0) { git push }
