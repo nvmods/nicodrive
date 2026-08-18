@@ -1,5 +1,5 @@
-run_id=32189140549
-run_number=177
-head_sha=466ff0963a75b7f40995f2d40510765cb4af8353
+run_id=32190439748
+run_number=180
+head_sha=17845c3e1844106a7df5fda3f03c8e3274ace887
 artifact=NicoBudget-Desktop-Windows
-version=0.1.177
+version=0.1.180
