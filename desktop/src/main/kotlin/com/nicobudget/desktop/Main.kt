@@ -20,11 +20,14 @@ internal enum class Section(val label: String, val glyph: String) {
     DASHBOARD("Tableau de bord", "⌂"),
     EXPENSES("Dépenses", "€"),
     BUDGET("Budget & récurrents", "¤"),
+    CLOSURES("Clôtures", "✓"),
     ARCHIVES("Archives", "▣"),
     STATS("Stats & analyses", "▥"),
     DRIVE("Leclerc Drive", "▤"),
     MENUS("Menus & courses", "☷"),
+    EXPORTS("Exports", "⇩"),
     DATA("Données & échanges", "⇄"),
+    DIAGNOSTICS("Diagnostics", "⚙"),
     SYNC("Synchronisation", "↔")
 }
 
@@ -73,34 +76,31 @@ private fun NicoBudgetDesktop(model: AppModel) {
             shadowElevation = 2.dp
         ) {
             Column(
-                Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 18.dp),
-                verticalArrangement = Arrangement.spacedBy(6.dp)
+                Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 14.dp),
+                verticalArrangement = Arrangement.spacedBy(3.dp)
             ) {
                 Text("NicoBudget", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 Text("Desktop 0.3", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Spacer(Modifier.height(12.dp))
+                Spacer(Modifier.height(8.dp))
 
                 Section.entries.forEach { item ->
                     NavigationDrawerItem(
                         selected = model.section == item,
                         onClick = { model.section = item },
-                        icon = { Text(item.glyph, style = MaterialTheme.typography.titleMedium) },
-                        label = { Text(item.label) },
+                        icon = { Text(item.glyph, style = MaterialTheme.typography.titleSmall) },
+                        label = { Text(item.label, style = MaterialTheme.typography.bodyMedium) },
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
 
                 Spacer(Modifier.weight(1f))
                 HorizontalDivider()
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(5.dp))
                 Text(
                     if (hasData) "Base PC chargée" else "Aucune donnée importée",
                     fontWeight = FontWeight.SemiBold,
                     style = MaterialTheme.typography.bodySmall
                 )
-                DesktopStore.meta("backup_created_at")?.takeIf { hasData && it.isNotBlank() }?.let {
-                    Text("Backup source : $it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                }
                 OutlinedButton(
                     onClick = {
                         val file = chooseBackupToOpen()
@@ -133,7 +133,7 @@ private fun NicoBudgetDesktop(model: AppModel) {
             }
 
             Box(Modifier.fillMaxSize()) {
-                if (!hasData && model.section !in setOf(Section.DATA, Section.SYNC)) {
+                if (!hasData && model.section !in setOf(Section.DATA, Section.EXPORTS, Section.DIAGNOSTICS, Section.SYNC)) {
                     EmptyDesktopState(
                         onImport = {
                             val file = chooseBackupToOpen()
@@ -149,11 +149,14 @@ private fun NicoBudgetDesktop(model: AppModel) {
                         Section.DASHBOARD -> DashboardV03Screen(model)
                         Section.EXPENSES -> ExpensesParityScreen(model)
                         Section.BUDGET -> BudgetManagementScreen(model)
+                        Section.CLOSURES -> ClosuresV03Screen(model)
                         Section.ARCHIVES -> ArchivesParityScreen(model)
                         Section.STATS -> AnalyticsV03Screen(model)
                         Section.DRIVE -> DriveV03Screen(model)
                         Section.MENUS -> MenusV03Screen(model)
+                        Section.EXPORTS -> ExportsV03Screen(model)
                         Section.DATA -> DataV03Screen(model)
+                        Section.DIAGNOSTICS -> DiagnosticsV03Screen(model)
                         Section.SYNC -> SyncDesktopScreen()
                     }
                 }
