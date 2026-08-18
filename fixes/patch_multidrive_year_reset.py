@@ -91,6 +91,7 @@ for patch_name in (
     "patch_product_normalization.py",
     "patch_food_habits.py",
     "patch_menu_planner.py",
+    "patch_menu_planner_tuning.py",
 ):
     patch = Path(__file__).with_name(patch_name)
     if not patch.exists():
