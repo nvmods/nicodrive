@@ -84,7 +84,9 @@ print(f"Reset d'année multi-Drive appliqué dans {target}")
 for patch_name in (
     "patch_xlsx_export.py",
     "patch_mail_url_sanitize.py",
-    "inspect_budget_runtime.py",
+    "patch_mail_html_fallback.py",
+    "patch_drive_current_cycle.py",
+    "patch_history_budget_reconcile.py",
 ):
     patch = Path(__file__).with_name(patch_name)
     if not patch.exists():
