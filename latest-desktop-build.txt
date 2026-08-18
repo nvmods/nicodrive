@@ -1,0 +1,5 @@
+run_id=32177743957
+run_number=171
+head_sha=9896611240ccdb481bcd402bb2ea02c848b24686
+artifact=NicoBudget-Desktop-Windows
+version=0.1.171
