@@ -8,7 +8,8 @@ import java.sql.PreparedStatement
 import java.time.LocalDate
 
 object DesktopEditor {
-    private fun connection(): Connection = DriverManager.getConnection("jdbc:sqlite:${DesktopStore.databaseFile.absolutePath}")
+    private fun connection(): Connection =
+        DriverManager.getConnection("jdbc:sqlite:${DesktopStore.databaseFile.absolutePath}")
 
     private fun quoteIdent(name: String): String = "\"" + name.replace("\"", "\"\"") + "\""
 
@@ -32,7 +33,9 @@ object DesktopEditor {
             columns.firstOrNull { it.equals(requested, ignoreCase = true) }?.let { it to value }
         }
         if (selected.isEmpty()) return false
-        val sql = "UPDATE ${quoteIdent(table)} SET " + selected.joinToString(",") { "${quoteIdent(it.first)}=?" } + " WHERE \"__desktop_id\"=?"
+        val sql = "UPDATE ${quoteIdent(table)} SET " +
+            selected.joinToString(",") { "${quoteIdent(it.first)}=?" } +
+            " WHERE \"__desktop_id\"=?"
         return connection().use { db ->
             db.prepareStatement(sql).use { ps ->
                 selected.forEachIndexed { index, (_, value) -> setValue(ps, index + 1, value) }
@@ -47,26 +50,37 @@ object DesktopEditor {
         val columns = DesktopStore.columns(table).map { it.name }
         require(columns.isNotEmpty()) { "Aucune colonne dans $table" }
         val template = DesktopStore.rows(table).lastOrNull()
+        val affinities = DesktopStore.columns(table).associate { it.name to it.affinity }
         val values = linkedMapOf<String, Any?>()
 
         columns.forEach { column ->
             val override = overrides.entries.firstOrNull { it.key.equals(column, ignoreCase = true) }
-            val value = when {
+            val templateValue = template?.values?.entries
+                ?.firstOrNull { it.key.equals(column, ignoreCase = true) }?.value
+            values[column] = when {
                 override != null -> override.value
                 column.equals("id", ignoreCase = true) -> nextNumericValue(table, column)
                 column.equals("expenseId", ignoreCase = true) -> null
-                else -> template?.values?.entries?.firstOrNull { it.key.equals(column, ignoreCase = true) }?.value
+                templateValue != null -> templateValue
+                affinities[column].equals("INTEGER", ignoreCase = true) -> 0L
+                affinities[column].equals("REAL", ignoreCase = true) -> 0.0
+                else -> ""
             }
-            values[column] = value
         }
 
-        val sql = "INSERT INTO ${quoteIdent(table)} (${columns.joinToString(",") { quoteIdent(it) }}) VALUES (${columns.joinToString(",") { "?" }})"
+        val sql = "INSERT INTO ${quoteIdent(table)} " +
+            "(${columns.joinToString(",") { quoteIdent(it) }}) VALUES " +
+            "(${columns.joinToString(",") { "?" }})"
         return connection().use { db ->
             db.prepareStatement(sql).use { ps ->
                 columns.forEachIndexed { index, column -> setValue(ps, index + 1, values[column]) }
                 ps.executeUpdate()
             }
-            db.createStatement().use { st -> st.executeQuery("SELECT last_insert_rowid()").use { rs -> if (rs.next()) rs.getLong(1) else 0L } }
+            db.createStatement().use { st ->
+                st.executeQuery("SELECT last_insert_rowid()").use { rs ->
+                    if (rs.next()) rs.getLong(1) else 0L
+                }
+            }
         }
     }
 
@@ -74,7 +88,9 @@ object DesktopEditor {
         if (!DesktopStore.columns(table).any { it.name.equals(column, ignoreCase = true) }) return 1L
         return connection().use { db ->
             db.createStatement().use { st ->
-                st.executeQuery("SELECT COALESCE(MAX(${quoteIdent(column)}),0)+1 FROM ${quoteIdent(table)}").use { rs -> if (rs.next()) rs.getLong(1) else 1L }
+                st.executeQuery("SELECT COALESCE(MAX(${quoteIdent(column)}),0)+1 FROM ${quoteIdent(table)}").use { rs ->
+                    if (rs.next()) rs.getLong(1) else 1L
+                }
             }
         }
     }
@@ -82,20 +98,24 @@ object DesktopEditor {
     fun deleteRow(table: String, desktopId: Long): Boolean = DesktopStore.deleteRow(table, desktopId)
 
     fun setPreferenceString(prefName: String, key: String, value: String) {
-        val encoded = JSONObject().put("type", "string").put("value", value)
-        putPreference(prefName, key, encoded)
+        putPreference(prefName, key, JSONObject().put("type", "string").put("value", value))
     }
 
     fun setPreferenceStringSet(prefName: String, key: String, value: Set<String>) {
-        val array = JSONArray(); value.sorted().forEach(array::put)
-        val encoded = JSONObject().put("type", "stringSet").put("value", array)
-        putPreference(prefName, key, encoded)
+        val array = JSONArray()
+        value.sorted().forEach(array::put)
+        putPreference(prefName, key, JSONObject().put("type", "stringSet").put("value", array))
     }
 
     private fun putPreference(prefName: String, key: String, encoded: JSONObject) {
         connection().use { db ->
-            db.prepareStatement("INSERT OR REPLACE INTO _nb_preferences(pref_name,pref_key,encoded_json) VALUES(?,?,?)").use { ps ->
-                ps.setString(1, prefName); ps.setString(2, key); ps.setString(3, encoded.toString()); ps.executeUpdate()
+            db.prepareStatement(
+                "INSERT OR REPLACE INTO _nb_preferences(pref_name,pref_key,encoded_json) VALUES(?,?,?)"
+            ).use { ps ->
+                ps.setString(1, prefName)
+                ps.setString(2, key)
+                ps.setString(3, encoded.toString())
+                ps.executeUpdate()
             }
         }
     }
@@ -103,46 +123,75 @@ object DesktopEditor {
     fun recomputeCurrentBudget() {
         if (!DesktopStore.tableExists("monthly_budget")) return
         val budget = DesktopStore.rows("monthly_budget").firstOrNull() ?: return
-        val start = runCatching { LocalDate.parse(budget.string("startDate")) }.getOrNull()
-        val end = runCatching { LocalDate.parse(budget.string("endDate")) }.getOrNull()
+        val start = budget.string("startDate")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+        val end = budget.string("endDate")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
         val income = budget.double("monthlyIncome") ?: 0.0
-        val fixed = if (DesktopStore.tableExists("fixed_charges")) DesktopStore.rows("fixed_charges").sumOf { it.double("amount") ?: 0.0 } else 0.0
-        val spent = if (DesktopStore.tableExists("expenses")) DesktopStore.rows("expenses").sumOf { row ->
-            val date = runCatching { LocalDate.parse(row.string("date")) }.getOrNull()
-            if (date != null && (start == null || !date.isBefore(start)) && (end == null || date.isBefore(end))) row.double("amount") ?: 0.0 else 0.0
+        val fixed = if (DesktopStore.tableExists("fixed_charges")) {
+            DesktopStore.rows("fixed_charges").sumOf { it.double("amount") ?: 0.0 }
         } else 0.0
-        updateRow("monthly_budget", budget.desktopId, mapOf("disposableLeftover" to (income - fixed - spent)))
+        val spent = if (DesktopStore.tableExists("expenses")) {
+            DesktopStore.rows("expenses").sumOf { row ->
+                val date = row.string("date")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+                if (date != null &&
+                    (start == null || !date.isBefore(start)) &&
+                    (end == null || date.isBefore(end))) {
+                    row.double("amount") ?: 0.0
+                } else 0.0
+            }
+        } else 0.0
+        updateRow(
+            "monthly_budget",
+            budget.desktopId,
+            mapOf("disposableLeftover" to (income - fixed - spent))
+        )
     }
 
     fun renameCategory(oldName: String, newName: String) {
-        val clean = newName.trim(); require(clean.isNotBlank()) { "Nom de catégorie vide" }
+        val clean = newName.trim()
+        require(clean.isNotBlank()) { "Nom de catégorie vide" }
         connection().use { db ->
             db.autoCommit = false
             try {
                 listOf("expenses", "expense_archive").forEach { table ->
-                    if (DesktopStore.tableExists(table) && DesktopStore.columns(table).any { it.name.equals("category", true) }) {
-                        db.prepareStatement("UPDATE ${quoteIdent(table)} SET ${quoteIdent("category") }=? WHERE ${quoteIdent("category") }=?").use { ps ->
-                            ps.setString(1, clean); ps.setString(2, oldName); ps.executeUpdate()
+                    if (DesktopStore.tableExists(table) &&
+                        DesktopStore.columns(table).any { it.name.equals("category", true) }) {
+                        db.prepareStatement(
+                            "UPDATE ${quoteIdent(table)} SET ${quoteIdent("category") }=? WHERE ${quoteIdent("category") }=?"
+                        ).use { ps ->
+                            ps.setString(1, clean)
+                            ps.setString(2, oldName)
+                            ps.executeUpdate()
                         }
                     }
                 }
                 if (DesktopStore.tableExists("expense_categories")) {
                     val nameColumn = categoryNameColumn("expense_categories")
                     if (nameColumn != null) {
-                        db.prepareStatement("UPDATE ${quoteIdent("expense_categories")} SET ${quoteIdent(nameColumn)}=? WHERE ${quoteIdent(nameColumn)}=?").use { ps ->
-                            ps.setString(1, clean); ps.setString(2, oldName); ps.executeUpdate()
+                        db.prepareStatement(
+                            "UPDATE ${quoteIdent("expense_categories")} SET ${quoteIdent(nameColumn)}=? WHERE ${quoteIdent(nameColumn)}=?"
+                        ).use { ps ->
+                            ps.setString(1, clean)
+                            ps.setString(2, oldName)
+                            ps.executeUpdate()
                         }
                     }
                 }
                 db.commit()
-            } catch (t: Throwable) { db.rollback(); throw t } finally { db.autoCommit = true }
+            } catch (t: Throwable) {
+                db.rollback()
+                throw t
+            } finally {
+                db.autoCommit = true
+            }
         }
     }
 
     fun addCategory(name: String) {
-        val clean = name.trim(); require(clean.isNotBlank()) { "Nom de catégorie vide" }
+        val clean = name.trim()
+        require(clean.isNotBlank()) { "Nom de catégorie vide" }
         if (!DesktopStore.tableExists("expense_categories")) return
-        val col = categoryNameColumn("expense_categories") ?: error("Colonne nom de catégorie introuvable")
+        val col = categoryNameColumn("expense_categories")
+            ?: error("Colonne nom de catégorie introuvable")
         insertLike("expense_categories", mapOf(col to clean))
     }
 
@@ -160,18 +209,28 @@ object DesktopEditor {
     fun categoryNameColumn(table: String = "expense_categories"): String? {
         if (!DesktopStore.tableExists(table)) return null
         val cols = DesktopStore.columns(table).map { it.name }
-        return cols.firstOrNull { it.equals("name", true) || it.equals("category", true) || it.equals("label", true) || it.equals("title", true) }
-            ?: cols.firstOrNull { !it.equals("id", true) }
+        return cols.firstOrNull {
+            it.equals("name", true) || it.equals("category", true) ||
+                it.equals("label", true) || it.equals("title", true)
+        } ?: cols.firstOrNull { !it.equals("id", true) }
     }
 
     fun categoryNames(): List<String> {
         val result = linkedSetOf<String>()
         if (DesktopStore.tableExists("expense_categories")) {
             val col = categoryNameColumn()
-            if (col != null) DesktopStore.rows("expense_categories").mapNotNullTo(result) { it.string(col)?.trim()?.takeIf(String::isNotBlank) }
+            if (col != null) {
+                DesktopStore.rows("expense_categories").mapNotNullTo(result) {
+                    it.string(col)?.trim()?.takeIf(String::isNotBlank)
+                }
+            }
         }
         listOf("expenses", "expense_archive").forEach { table ->
-            if (DesktopStore.tableExists(table)) DesktopStore.rows(table).mapNotNullTo(result) { it.string("category")?.trim()?.takeIf(String::isNotBlank) }
+            if (DesktopStore.tableExists(table)) {
+                DesktopStore.rows(table).mapNotNullTo(result) {
+                    it.string("category")?.trim()?.takeIf(String::isNotBlank)
+                }
+            }
         }
         return result.sorted()
     }
