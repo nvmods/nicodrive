@@ -8,7 +8,7 @@ plugins {
 
 group = "com.nicobudget"
 val desktopBuild = (System.getenv("NICO_DESKTOP_BUILD")?.toIntOrNull() ?: 1).coerceIn(0, 65535)
-val desktopVersion = "0.2.$desktopBuild"
+val desktopVersion = "0.3.$desktopBuild"
 version = desktopVersion
 
 kotlin {
