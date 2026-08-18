@@ -1,5 +1,7 @@
 # NicoBudget — architecture PC et synchronisation
 
+Version du document : 1
+
 ## Objectif
 
 Ajouter une version PC sans transformer NicoBudget en application dépendante d'un cloud. Le téléphone et le PC doivent rester utilisables hors ligne, puis se synchroniser quand ils se retrouvent sur le même réseau ou via une liaison explicitement configurée.
