@@ -10,6 +10,14 @@ target = root / "app/src/main/java/com/example/nicobudget/ui/DriveStatsScreen.kt
 if not target.exists():
     raise SystemExit(f"Fichier introuvable: {target}")
 
+# Installer l'exporteur Kotlin dans le projet extrait.
+exporter_src = Path(__file__).with_name("DataXlsxExporter.kt")
+exporter_dst = root / "app/src/main/java/com/example/nicobudget/export/DataXlsxExporter.kt"
+if not exporter_src.exists():
+    raise SystemExit(f"Exporteur introuvable: {exporter_src}")
+exporter_dst.parent.mkdir(parents=True, exist_ok=True)
+exporter_dst.write_text(exporter_src.read_text(encoding="utf-8"), encoding="utf-8")
+
 text = target.read_text(encoding="utf-8")
 
 imports = {
@@ -105,3 +113,4 @@ if "Exporter toutes les données (.xlsx)" not in text:
 
 target.write_text(text, encoding="utf-8")
 print(f"Export XLSX intégré dans {target}")
+print(f"Exporteur XLSX copié vers {exporter_dst}")
