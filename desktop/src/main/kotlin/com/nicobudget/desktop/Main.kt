@@ -1,0 +1,208 @@
+package com.nicobudget.desktop
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.Window
+import androidx.compose.ui.window.application
+import androidx.compose.ui.window.rememberWindowState
+import java.io.File
+import javax.swing.JFileChooser
+import javax.swing.filechooser.FileNameExtensionFilter
+
+internal enum class Section(val label: String, val glyph: String) {
+    DASHBOARD("Tableau de bord", "⌂"),
+    EXPENSES("Dépenses", "€"),
+    ARCHIVES("Archives", "▣"),
+    STATS("Statistiques", "▥"),
+    DRIVE("Leclerc Drive", "▤"),
+    MENUS("Menus", "☷"),
+    DATA("Données & backup", "⇄"),
+    SYNC("Synchronisation", "↔")
+}
+
+internal class AppModel {
+    var section by mutableStateOf(Section.DASHBOARD)
+    var revision by mutableIntStateOf(0)
+    var message by mutableStateOf<String?>(null)
+    var error by mutableStateOf(false)
+
+    fun refresh(message: String? = null) {
+        revision++
+        if (message != null) {
+            this.message = message
+            error = false
+        }
+    }
+
+    fun fail(text: String) {
+        message = text
+        error = true
+    }
+}
+
+fun main() = application {
+    val state = rememberWindowState(width = 1360.dp, height = 860.dp)
+    Window(
+        onCloseRequest = ::exitApplication,
+        title = "NicoBudget Desktop",
+        state = state
+    ) {
+        MaterialTheme(colorScheme = lightColorScheme()) {
+            val model = remember { AppModel() }
+            NicoBudgetDesktop(model)
+        }
+    }
+}
+
+@Composable
+private fun NicoBudgetDesktop(model: AppModel) {
+    val hasData = remember(model.revision) { DesktopStore.hasDataset() }
+
+    Row(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.background)) {
+        Surface(
+            modifier = Modifier.fillMaxHeight().width(235.dp),
+            tonalElevation = 2.dp,
+            shadowElevation = 2.dp
+        ) {
+            Column(
+                Modifier.fillMaxSize().padding(horizontal = 12.dp, vertical = 18.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                Text("NicoBudget", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text("Desktop 0.1", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Spacer(Modifier.height(12.dp))
+
+                Section.entries.forEach { item ->
+                    NavigationDrawerItem(
+                        selected = model.section == item,
+                        onClick = { model.section = item },
+                        icon = { Text(item.glyph, style = MaterialTheme.typography.titleMedium) },
+                        label = { Text(item.label) },
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
+
+                Spacer(Modifier.weight(1f))
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    if (hasData) "Base PC chargée" else "Aucune donnée importée",
+                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.bodySmall
+                )
+                DesktopStore.meta("backup_created_at")?.takeIf { hasData && it.isNotBlank() }?.let {
+                    Text("Backup source : $it", style = MaterialTheme.typography.labelSmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                OutlinedButton(
+                    onClick = {
+                        val file = chooseBackupToOpen()
+                        if (file != null) {
+                            runCatching { DesktopStore.importBackup(file) }
+                                .onSuccess { summary ->
+                                    model.refresh("Backup importé : ${summary.tables} tables, ${summary.rows} lignes.")
+                                }
+                                .onFailure { model.fail("Import impossible : ${it.message}") }
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth()
+                ) { Text("Importer .nbbackup") }
+            }
+        }
+
+        Column(Modifier.fillMaxSize()) {
+            model.message?.let { text ->
+                Surface(
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 10.dp),
+                    color = if (model.error) MaterialTheme.colorScheme.errorContainer else MaterialTheme.colorScheme.primaryContainer,
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(text, modifier = Modifier.weight(1f), color = if (model.error) MaterialTheme.colorScheme.onErrorContainer else MaterialTheme.colorScheme.onPrimaryContainer)
+                        TextButton(onClick = { model.message = null }) { Text("Fermer") }
+                    }
+                }
+            }
+
+            Box(Modifier.fillMaxSize()) {
+                if (!hasData && model.section !in setOf(Section.DATA, Section.SYNC)) {
+                    EmptyDesktopState(
+                        onImport = {
+                            val file = chooseBackupToOpen()
+                            if (file != null) {
+                                runCatching { DesktopStore.importBackup(file) }
+                                    .onSuccess { summary -> model.refresh("Backup importé : ${summary.rows} lignes.") }
+                                    .onFailure { model.fail("Import impossible : ${it.message}") }
+                            }
+                        }
+                    )
+                } else {
+                    when (model.section) {
+                        Section.DASHBOARD -> DashboardScreen(model.revision)
+                        Section.EXPENSES -> ExpensesScreen(model.revision)
+                        Section.ARCHIVES -> ArchivesScreen(model)
+                        Section.STATS -> BudgetStatsDesktopScreen(model.revision)
+                        Section.DRIVE -> DriveDesktopScreen(model.revision)
+                        Section.MENUS -> MenusDesktopScreen(model.revision)
+                        Section.DATA -> DataDesktopScreen(model)
+                        Section.SYNC -> SyncDesktopScreen()
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun EmptyDesktopState(onImport: () -> Unit) {
+    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+        Card(Modifier.widthIn(max = 560.dp).padding(24.dp)) {
+            Column(
+                Modifier.padding(28.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp)
+            ) {
+                Text("Bienvenue dans NicoBudget Desktop", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+                Text(
+                    "Exporte un fichier .nbbackup depuis le téléphone puis importe-le ici. Le PC crée ensuite sa propre base locale et fonctionne hors ligne.",
+                    style = MaterialTheme.typography.bodyLarge
+                )
+                Button(onClick = onImport) { Text("Choisir un backup NicoBudget") }
+                Text(
+                    "Les cookies et secrets Leclerc ne sont pas contenus dans le backup.",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        }
+    }
+}
+
+internal fun chooseBackupToOpen(): File? {
+    val chooser = JFileChooser().apply {
+        dialogTitle = "Importer une sauvegarde NicoBudget"
+        fileFilter = FileNameExtensionFilter("Sauvegarde NicoBudget (*.nbbackup)", "nbbackup")
+    }
+    return if (chooser.showOpenDialog(null) == JFileChooser.APPROVE_OPTION) chooser.selectedFile else null
+}
+
+internal fun chooseBackupToSave(): File? {
+    val chooser = JFileChooser().apply {
+        dialogTitle = "Exporter une sauvegarde NicoBudget"
+        fileFilter = FileNameExtensionFilter("Sauvegarde NicoBudget (*.nbbackup)", "nbbackup")
+        selectedFile = File("NicoBudget_backup_PC.nbbackup")
+    }
+    if (chooser.showSaveDialog(null) != JFileChooser.APPROVE_OPTION) return null
+    val selected = chooser.selectedFile
+    return if (selected.extension.equals("nbbackup", ignoreCase = true)) selected else File(selected.parentFile, selected.name + ".nbbackup")
+}
