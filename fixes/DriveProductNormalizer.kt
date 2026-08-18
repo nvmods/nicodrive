@@ -15,8 +15,8 @@ object DriveProductNormalizer {
 
     fun key(label: String): String {
         var text = label
-            .replace('œ', 'o').replace("oe", "oe")
-            .replace('Œ', 'O')
+            .replace("œ", "oe")
+            .replace("Œ", "OE")
             .replace('×', 'x')
 
         text = Normalizer.normalize(text, Normalizer.Form.NFD)
