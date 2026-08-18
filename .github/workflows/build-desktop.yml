@@ -1,0 +1,111 @@
+name: Build NicoBudget Desktop
+
+on:
+  push:
+    branches: [ main ]
+    paths:
+      - 'desktop/**'
+      - '.github/workflows/build-desktop.yml'
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    env:
+      NICO_DESKTOP_BUILD: ${{ github.run_number }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+
+      - name: Ensure WiX is available
+        shell: pwsh
+        run: |
+          if (-not (Get-Command candle.exe -ErrorAction SilentlyContinue)) {
+            choco install wixtoolset --no-progress -y
+            $wix = Get-ChildItem 'C:\Program Files (x86)' -Directory -Filter 'WiX Toolset*' -ErrorAction SilentlyContinue |
+              Sort-Object Name -Descending | Select-Object -First 1
+            if ($wix) {
+              Add-Content $env:GITHUB_PATH "$($wix.FullName)\bin"
+            }
+          }
+          Write-Host "WiX lookup:"
+          Get-Command candle.exe -ErrorAction SilentlyContinue | Format-List
+
+      - name: Compile Desktop
+        run: gradle -p desktop compileKotlin --stacktrace
+
+      - name: Build portable image
+        run: gradle -p desktop createDistributable --stacktrace
+
+      - name: Build MSI and EXE
+        run: gradle -p desktop packageMsi packageExe --stacktrace
+
+      - name: Package portable ZIP
+        shell: pwsh
+        run: |
+          $app = Get-ChildItem 'desktop\build\compose\binaries\main\app' -Directory | Select-Object -First 1
+          if (-not $app) { throw 'Portable app image not found' }
+          Compress-Archive -Path "$($app.FullName)\*" -DestinationPath "NicoBudget-Desktop-portable-b${{ github.run_number }}.zip" -Force
+
+      - name: Collect packages
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path dist | Out-Null
+          Get-ChildItem 'desktop\build\compose\binaries\main\msi\*.msi' | Copy-Item -Destination dist
+          Get-ChildItem 'desktop\build\compose\binaries\main\exe\*.exe' | Copy-Item -Destination dist
+          Copy-Item "NicoBudget-Desktop-portable-b${{ github.run_number }}.zip" dist
+          Get-ChildItem dist | Format-Table Name,Length
+
+      - name: Upload Desktop packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: NicoBudget-Desktop-Windows
+          path: dist/*
+          if-no-files-found: error
+
+      - name: Publish latest Desktop release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view latest-desktop *> $null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create latest-desktop --title 'NicoBudget Desktop latest' --notes 'Build Windows automatique de NicoBudget Desktop.' --latest=false
+          }
+          gh release upload latest-desktop dist/* --clobber
+
+      - name: Write Desktop build marker
+        shell: pwsh
+        run: |
+          @"
+          run_id=${{ github.run_id }}
+          run_number=${{ github.run_number }}
+          head_sha=${{ github.sha }}
+          artifact=NicoBudget-Desktop-Windows
+          version=0.1.${{ github.run_number }}
+          "@ | Set-Content -Encoding utf8 latest-desktop-build.txt
+
+      - name: Commit Desktop build marker
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add latest-desktop-build.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "Update latest Desktop build marker [skip ci]"
+            git push
+          fi
