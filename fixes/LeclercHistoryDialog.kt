@@ -32,7 +32,8 @@ import kotlin.coroutines.resume
 
 private data class LeclercHistoryItem(
     val orderId: String,
-    val url: String
+    val url: String,
+    val referer: String = ""
 )
 
 private data class LeclercHistoryPage(
@@ -43,6 +44,11 @@ private data class LeclercHistoryPage(
     val signature: String
 )
 
+private data class LeclercDriveSource(
+    val label: String,
+    val url: String
+)
+
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
 fun LeclercHistoryDialog(
@@ -51,11 +57,27 @@ fun LeclercHistoryDialog(
     onDismiss: () -> Unit
 ) {
     val scope = rememberCoroutineScope()
+
+    // Les deux Drives utilisés par le même compte Leclerc. Ils sont sur le même
+    // domaine fd6 : la session WebView/cookies peut donc être réutilisée pendant
+    // un seul batch. La déduplication finale se fait sur le numéro de commande.
+    val driveSources = remember(initialUrl) {
+        listOf(
+            LeclercDriveSource("Saint-Médard-en-Jalles", initialUrl),
+            LeclercDriveSource(
+                "Saint-Jean-d'Illac",
+                "https://fd6-espace-client.leclercdrive.fr/drive/magasin-123301-123301-saint-jean-dillac/mes-commandes.aspx"
+            )
+        ).distinctBy { it.url.substringBefore('?') }
+    }
+
     var webView by remember { mutableStateOf<WebView?>(null) }
     var currentUrl by remember(initialUrl) { mutableStateOf(initialUrl) }
     var loading by remember { mutableStateOf(true) }
     var running by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("Connecte-toi si nécessaire puis lance la synchronisation.") }
+    var status by remember {
+        mutableStateOf("Connecte-toi si nécessaire puis lance la synchronisation des ${driveSources.size} Drives.")
+    }
     var progress by remember { mutableStateOf(0f) }
 
     suspend fun eval(view: WebView, script: String): String =
@@ -83,7 +105,7 @@ fun LeclercHistoryDialog(
               const items = links.map(a => {
                 const row = a.closest('tr');
                 const num = row ? row.querySelector('a.aNumCommande') : null;
-                const orderId = (num ? num.textContent : '').replace(/\\D/g, '');
+                const orderId = (num ? num.textContent : '').replace(/\D/g, '');
                 return { orderId: orderId, url: a.href };
               });
               const sel = document.querySelector('select[id*="ddlFiltreAnnees"]');
@@ -108,13 +130,20 @@ fun LeclercHistoryDialog(
             val years = buildList {
                 for (i in 0 until yearsJson.length()) add(yearsJson.optString(i))
             }
+            val pageReferer = view.url.orEmpty()
             val itemsJson = obj.optJSONArray("items") ?: JSONArray()
             val items = buildList {
                 for (i in 0 until itemsJson.length()) {
                     val row = itemsJson.optJSONObject(i) ?: continue
                     val url = row.optString("url")
                     if (url.isNotBlank()) {
-                        add(LeclercHistoryItem(row.optString("orderId"), url))
+                        add(
+                            LeclercHistoryItem(
+                                orderId = row.optString("orderId"),
+                                url = url,
+                                referer = pageReferer
+                            )
+                        )
                     }
                 }
             }
@@ -174,33 +203,53 @@ fun LeclercHistoryDialog(
     }
 
     suspend fun waitForChange(view: WebView, oldSignature: String, expectedYear: String? = null) {
-        repeat(12) {
+        repeat(16) {
             delay(650)
             val p = scrapePage(view)
-            if (p != null && p.signature.isNotBlank()) {
+            if (p != null) {
                 val yearOk = expectedYear == null || p.year == expectedYear
-                if (yearOk && p.signature != oldSignature) return
+                // Une année sans commande a une signature vide : le changement
+                // d'année suffit alors à considérer la navigation terminée.
+                val changed = p.signature != oldSignature ||
+                    (expectedYear != null && p.year == expectedYear)
+                if (yearOk && changed) return
             }
         }
     }
 
-    suspend fun collectHistory(view: WebView): List<LeclercHistoryItem> {
+    suspend fun waitForHistoryRoot(view: WebView): LeclercHistoryPage? {
+        repeat(30) {
+            delay(500)
+            val page = scrapePage(view)
+            // Le sélecteur d'années est le meilleur marqueur d'une page
+            // Mes commandes réellement authentifiée, même si l'année est vide.
+            if (page != null && (page.years.isNotEmpty() || page.items.isNotEmpty())) {
+                return page
+            }
+        }
+        return null
+    }
+
+    suspend fun collectHistory(view: WebView, driveLabel: String): List<LeclercHistoryItem> {
         clickMoreIfPresent(view)
         var first = scrapePage(view)
-            ?: throw IllegalStateException("La page Mes commandes n'est pas encore disponible.")
-        if (first.items.isEmpty()) {
-            throw IllegalStateException("Aucun bon détecté. Termine la connexion/reCAPTCHA puis réessaie.")
-        }
+            ?: throw IllegalStateException("La page Mes commandes de $driveLabel n'est pas encore disponible.")
 
         val all = LinkedHashMap<String, LeclercHistoryItem>()
-        val years = if (first.years.isNotEmpty()) first.years else listOf(first.year).filter { it.isNotBlank() }
+        val years = if (first.years.isNotEmpty()) {
+            first.years.filter { it.isNotBlank() }
+        } else {
+            listOf(first.year).filter { it.isNotBlank() }
+        }
+        if (years.isEmpty()) return emptyList()
+
         var pageCounter = 0
 
         for ((yearIndex, year) in years.withIndex()) {
             if (yearIndex > 0) {
-                status = "Ouverture de l'année $year…"
+                status = "$driveLabel · ouverture de l'année $year…"
                 val before = scrapePage(view)?.signature.orEmpty()
-                if (!selectYear(view, year)) break
+                if (!selectYear(view, year)) continue
                 waitForChange(view, before, year)
                 clickMoreIfPresent(view)
                 first = scrapePage(view) ?: continue
@@ -211,10 +260,15 @@ fun LeclercHistoryDialog(
             while (true) {
                 pageCounter++
                 if (pageCounter > 250) break
-                if (!seenSignatures.add(page.signature)) break
 
-                page.items.forEach { item -> all.putIfAbsent(item.url, item) }
-                status = "Scan ${page.year.ifBlank { year }} : ${all.size} commande(s) trouvée(s)…"
+                val pageKey = "${page.year}|${page.signature}"
+                if (!seenSignatures.add(pageKey)) break
+
+                page.items.forEach { item ->
+                    val key = item.orderId.filter(Char::isDigit).ifBlank { item.url }
+                    all.putIfAbsent(key, item)
+                }
+                status = "$driveLabel · ${page.year.ifBlank { year }} : ${all.size} commande(s) trouvée(s)…"
 
                 if (!page.nextActive) break
                 val before = page.signature
@@ -229,12 +283,46 @@ fun LeclercHistoryDialog(
         return all.values.toList()
     }
 
+    suspend fun collectAllDrives(view: WebView): List<LeclercHistoryItem> {
+        val combined = LinkedHashMap<String, LeclercHistoryItem>()
+
+        for ((sourceIndex, source) in driveSources.withIndex()) {
+            status = "Ouverture du Drive ${source.label} (${sourceIndex + 1}/${driveSources.size})…"
+
+            val currentBase = view.url.orEmpty().substringBefore('?')
+            val targetBase = source.url.substringBefore('?')
+            if (currentBase != targetBase) {
+                view.loadUrl(source.url)
+                val root = waitForHistoryRoot(view)
+                if (root == null) {
+                    throw IllegalStateException(
+                        "Impossible d'ouvrir l'historique ${source.label}. " +
+                            "Vérifie la connexion Leclerc/reCAPTCHA puis relance."
+                    )
+                }
+            } else if (waitForHistoryRoot(view) == null) {
+                throw IllegalStateException(
+                    "La page ${source.label} n'est pas prête. Termine la connexion/reCAPTCHA puis relance."
+                )
+            }
+
+            val found = collectHistory(view, source.label)
+            found.forEach { item ->
+                val key = item.orderId.filter(Char::isDigit).ifBlank { item.url }
+                combined.putIfAbsent(key, item)
+            }
+            status = "${source.label} : ${found.size} trouvée(s) · ${combined.size} unique(s) au total."
+        }
+
+        return combined.values.toList()
+    }
+
     suspend fun downloadPdf(view: WebView, item: LeclercHistoryItem): File {
         val cm = CookieManager.getInstance()
         cm.flush()
         val cookies = cm.getCookie(item.url).orEmpty()
         val userAgent = view.settings.userAgentString.orEmpty()
-        val referer = currentUrl
+        val referer = item.referer.ifBlank { currentUrl }
         val appContext = view.context.applicationContext
 
         return withContext(Dispatchers.IO) {
@@ -272,9 +360,9 @@ fun LeclercHistoryDialog(
         progress = 0f
         scope.launch {
             try {
-                status = "Analyse de l'historique E.Leclerc…"
-                val items = collectHistory(view)
-                if (items.isEmpty()) throw IllegalStateException("Aucune commande détectée.")
+                status = "Analyse des ${driveSources.size} historiques E.Leclerc…"
+                val items = collectAllDrives(view)
+                if (items.isEmpty()) throw IllegalStateException("Aucune commande détectée sur les Drives configurés.")
 
                 val existing = viewModel.driveOrdersLiveData.value.orEmpty()
                     .map { it.orderId.filter(Char::isDigit) }
@@ -286,7 +374,7 @@ fun LeclercHistoryDialog(
                 }
 
                 if (missing.isEmpty()) {
-                    status = "${items.size} commande(s) trouvée(s) : tout est déjà importé."
+                    status = "${items.size} commande(s) unique(s) trouvée(s) sur ${driveSources.size} Drives : tout est déjà importé."
                     progress = 1f
                     running = false
                     return@launch
@@ -295,7 +383,7 @@ fun LeclercHistoryDialog(
                 var imported = 0
                 var duplicates = 0
                 var failed = 0
-                status = "${items.size} trouvée(s), ${items.size - missing.size} déjà importée(s), ${missing.size} à récupérer."
+                status = "${items.size} unique(s), ${items.size - missing.size} déjà importée(s), ${missing.size} à récupérer."
 
                 missing.forEachIndexed { index, item ->
                     status = "Téléchargement ${index + 1}/${missing.size} — commande ${item.orderId.ifBlank { "?" }}…"
@@ -323,7 +411,7 @@ fun LeclercHistoryDialog(
                 viewModel.refreshBudget()
                 viewModel.calculateCurrentWeekBudget()
                 viewModel.loadExpensesByCategory()
-                status = "Batch terminé : $imported importée(s), $duplicates doublon(s), $failed échec(s)."
+                status = "Batch multi-Drive terminé : $imported importée(s), $duplicates doublon(s), $failed échec(s)."
                 progress = 1f
             } catch (e: Exception) {
                 status = e.message ?: "Erreur pendant la synchronisation de l'historique."
@@ -351,7 +439,14 @@ fun LeclercHistoryDialog(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    Text("Historique E.Leclerc", style = MaterialTheme.typography.titleMedium)
+                    Column {
+                        Text("Historique E.Leclerc", style = MaterialTheme.typography.titleMedium)
+                        Text(
+                            "Saint-Médard + Saint-Jean-d'Illac",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
                     TextButton(onClick = onDismiss, enabled = !running) { Text("Fermer") }
                 }
 
@@ -411,7 +506,7 @@ fun LeclercHistoryDialog(
                                 else startBatch(view)
                             }
                         ) {
-                            Text(if (running) "Synchronisation…" else "Scanner et importer")
+                            Text(if (running) "Synchronisation…" else "Scanner les 2 Drives")
                         }
                     }
                 }
