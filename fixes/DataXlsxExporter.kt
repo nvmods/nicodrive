@@ -2,9 +2,10 @@ package com.example.nicobudget.export
 
 import android.content.Context
 import android.database.Cursor
-import android.database.sqlite.SQLiteDatabase
 import android.net.Uri
 import android.util.Base64
+import androidx.sqlite.db.SupportSQLiteDatabase
+import com.example.nicobudget.data.db.AppDatabase
 import java.io.BufferedOutputStream
 import java.io.OutputStreamWriter
 import java.io.Writer
@@ -18,11 +19,11 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
- * Exporteur XLSX autonome, sans dépendance Apache POI.
+ * Export XLSX autonome, sans Apache POI.
  *
- * Il exporte toutes les tables applicatives des bases SQLite locales dans un
- * classeur Excel, en excluant les tables techniques SQLite/Room et les
- * préférences de l'application (qui peuvent contenir des identifiants).
+ * Important : les donnees sont lues via la connexion Room deja ouverte par
+ * NicoBudget. Cela garantit que les donnees presentes dans le WAL sont visibles
+ * dans l'export, contrairement a une reouverture independante du fichier SQLite.
  */
 object DataXlsxExporter {
 
@@ -31,16 +32,16 @@ object DataXlsxExporter {
         val dataSheets: Int,
         val rows: Long
     ) {
-        val sheets: Int get() = dataSheets + 1 // + onglet Index
+        val sheets: Int get() = dataSheets + 1 // + Index
     }
 
     private data class SheetSpec(
-        val databaseName: String,
-        val databasePath: String,
         val tableName: String,
         val sheetName: String,
         val rowCount: Long
     )
+
+    private const val DATABASE_NAME = "nico_budget_db"
 
     private val technicalTables = setOf(
         "android_metadata",
@@ -48,17 +49,19 @@ object DataXlsxExporter {
     )
 
     fun export(context: Context, uri: Uri): ExportResult {
-        val specs = discoverTables(context)
+        val roomDb = AppDatabase.getDatabase(context.applicationContext)
+        val db = roomDb.openHelper.writableDatabase
+        val specs = discoverTables(db)
+
         if (specs.isEmpty()) {
-            throw IllegalStateException("Aucune table de données locale à exporter.")
+            throw IllegalStateException("Aucune table NicoBudget a exporter.")
         }
 
+        val totalRows = specs.sumOf { it.rowCount }
         val output = context.contentResolver.openOutputStream(uri, "w")
             ?: throw IllegalStateException("Impossible d'ouvrir le fichier de destination.")
 
-        val totalRows = specs.sumOf { it.rowCount }
         val totalSheets = specs.size + 1
-
         ZipOutputStream(BufferedOutputStream(output)).use { zip ->
             writeContentTypes(zip, totalSheets)
             writeRootRelationships(zip)
@@ -66,81 +69,43 @@ object DataXlsxExporter {
             writeWorkbookRelationships(zip, totalSheets)
             writeStyles(zip)
             writeIndexSheet(zip, specs)
-
             specs.forEachIndexed { index, spec ->
-                writeTableSheet(zip, sheetNumber = index + 2, spec = spec)
+                writeTableSheet(zip, index + 2, spec, db)
             }
         }
 
         return ExportResult(
-            databases = specs.map { it.databaseName }.distinct().size,
+            databases = 1,
             dataSheets = specs.size,
             rows = totalRows
         )
     }
 
-    private fun discoverTables(context: Context): List<SheetSpec> {
-        val raw = mutableListOf<Triple<String, String, Pair<String, Long>>>()
-
-        context.databaseList()
-            .sorted()
-            .forEach { databaseName ->
-                val dbFile = context.getDatabasePath(databaseName)
-                if (!dbFile.exists()) return@forEach
-
-                var db: SQLiteDatabase? = null
-                try {
-                    db = SQLiteDatabase.openDatabase(
-                        dbFile.absolutePath,
-                        null,
-                        SQLiteDatabase.OPEN_READONLY
-                    )
-                    db.rawQuery(
-                        "SELECT name FROM sqlite_master " +
-                            "WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
-                        null
-                    ).use { cursor ->
-                        while (cursor.moveToNext()) {
-                            val table = cursor.getString(0) ?: continue
-                            if (table in technicalTables) continue
-                            val count = queryRowCount(db, table)
-                            raw += Triple(
-                                databaseName,
-                                dbFile.absolutePath,
-                                table to count
-                            )
-                        }
-                    }
-                } catch (_: Exception) {
-                    // Une base annexe illisible ne doit pas empêcher l'export des autres.
-                } finally {
-                    db?.close()
-                }
+    private fun discoverTables(db: SupportSQLiteDatabase): List<SheetSpec> {
+        val tables = mutableListOf<Pair<String, Long>>()
+        db.query(
+            "SELECT name FROM sqlite_master " +
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
+        ).use { cursor ->
+            while (cursor.moveToNext()) {
+                val table = cursor.getString(0) ?: continue
+                if (table in technicalTables) continue
+                tables += table to queryRowCount(db, table)
             }
+        }
 
         val usedNames = mutableSetOf<String>()
-        val duplicateTables = raw.groupingBy { it.third.first }.eachCount()
-
-        return raw.map { (databaseName, databasePath, tableAndCount) ->
-            val (tableName, count) = tableAndCount
-            val preferred = if ((duplicateTables[tableName] ?: 0) > 1) {
-                "${databaseName.substringBeforeLast('.')}_$tableName"
-            } else {
-                tableName
-            }
+        return tables.map { (table, count) ->
             SheetSpec(
-                databaseName = databaseName,
-                databasePath = databasePath,
-                tableName = tableName,
-                sheetName = uniqueSheetName(preferred, usedNames),
+                tableName = table,
+                sheetName = uniqueSheetName(table, usedNames),
                 rowCount = count
             )
         }
     }
 
-    private fun queryRowCount(db: SQLiteDatabase, table: String): Long {
-        val sql = "SELECT COUNT(*) FROM ${quoteIdentifier(table)}"
-        return db.rawQuery(sql, null).use { cursor ->
+    private fun queryRowCount(db: SupportSQLiteDatabase, table: String): Long {
+        return db.query("SELECT COUNT(*) FROM ${quoteIdentifier(table)}").use { cursor ->
             if (cursor.moveToFirst()) cursor.getLong(0) else 0L
         }
     }
@@ -214,75 +179,71 @@ object DataXlsxExporter {
 
     private fun writeIndexSheet(zip: ZipOutputStream, specs: List<SheetSpec>) {
         writeXmlEntry(zip, "xl/worksheets/sheet1.xml") { w ->
-            val lastRow = specs.size + 6
+            val lastRow = specs.size + 7
             w.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
             w.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
             w.append("<dimension ref=\"A1:E$lastRow\"/>")
-            w.append("<sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"5\" topLeftCell=\"A6\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>")
-            w.append("<cols><col min=\"1\" max=\"1\" width=\"28\" customWidth=\"1\"/><col min=\"2\" max=\"3\" width=\"24\" customWidth=\"1\"/><col min=\"4\" max=\"4\" width=\"12\" customWidth=\"1\"/><col min=\"5\" max=\"5\" width=\"48\" customWidth=\"1\"/></cols>")
+            w.append("<sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"6\" topLeftCell=\"A7\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>")
+            w.append("<cols><col min=\"1\" max=\"1\" width=\"28\" customWidth=\"1\"/><col min=\"2\" max=\"3\" width=\"24\" customWidth=\"1\"/><col min=\"4\" max=\"4\" width=\"12\" customWidth=\"1\"/><col min=\"5\" max=\"5\" width=\"52\" customWidth=\"1\"/></cols>")
             w.append("<sheetData>")
 
             writeRow(w, 1, listOf("Export NicoBudget"), header = true)
-            writeRow(w, 2, listOf("Généré le", LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.FRANCE))))
-            writeRow(w, 3, listOf("Contenu", "Tables de données SQLite locales. Les préférences et identifiants ne sont pas exportés."))
-            writeRow(w, 4, listOf("Lignes de données", specs.sumOf { it.rowCount }.toString()))
-            writeRow(w, 5, listOf("Onglet", "Base", "Table", "Lignes", "Description"), header = true)
+            writeRow(w, 2, listOf("Genere le", LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss", Locale.FRANCE))))
+            writeRow(w, 3, listOf("Base", DATABASE_NAME))
+            writeRow(w, 4, listOf("Lecture", "Connexion Room active (donnees WAL incluses)"))
+            writeRow(w, 5, listOf("Lignes de donnees", specs.sumOf { it.rowCount }.toString()))
+            writeRow(w, 6, listOf("Onglet", "Base", "Table", "Lignes", "Description"), header = true)
 
             specs.forEachIndexed { index, spec ->
                 writeRow(
                     w,
-                    index + 6,
+                    index + 7,
                     listOf(
                         spec.sheetName,
-                        spec.databaseName,
+                        DATABASE_NAME,
                         spec.tableName,
                         spec.rowCount.toString(),
                         describeTable(spec.tableName)
                     )
                 )
             }
-            w.append("</sheetData><autoFilter ref=\"A5:E$lastRow\"/></worksheet>")
+            w.append("</sheetData><autoFilter ref=\"A6:E$lastRow\"/></worksheet>")
         }
     }
 
-    private fun writeTableSheet(zip: ZipOutputStream, sheetNumber: Int, spec: SheetSpec) {
-        var db: SQLiteDatabase? = null
-        try {
-            db = SQLiteDatabase.openDatabase(
-                spec.databasePath,
-                null,
-                SQLiteDatabase.OPEN_READONLY
-            )
-            val sql = "SELECT * FROM ${quoteIdentifier(spec.tableName)}"
-            db.rawQuery(sql, null).use { cursor ->
-                writeXmlEntry(zip, "xl/worksheets/sheet$sheetNumber.xml") { w ->
-                    val columns = cursor.columnNames.toList()
-                    val lastColumn = columnName(max(1, columns.size) - 1)
-                    val lastRow = spec.rowCount + 1
+    private fun writeTableSheet(
+        zip: ZipOutputStream,
+        sheetNumber: Int,
+        spec: SheetSpec,
+        db: SupportSQLiteDatabase
+    ) {
+        val sql = "SELECT * FROM ${quoteIdentifier(spec.tableName)}"
+        db.query(sql).use { cursor ->
+            writeXmlEntry(zip, "xl/worksheets/sheet$sheetNumber.xml") { w ->
+                val columns = cursor.columnNames.toList()
+                val lastColumn = columnName(max(1, columns.size) - 1)
+                val lastRow = spec.rowCount + 1
 
-                    w.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
-                    w.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
-                    w.append("<dimension ref=\"A1:$lastColumn${max(1L, lastRow)}\"/>")
-                    w.append("<sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>")
-                    writeColumnWidths(w, columns)
-                    w.append("<sheetData>")
+                w.append("<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>")
+                w.append("<worksheet xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\">")
+                w.append("<dimension ref=\"A1:$lastColumn${max(1L, lastRow)}\"/>")
+                w.append("<sheetViews><sheetView workbookViewId=\"0\"><pane ySplit=\"1\" topLeftCell=\"A2\" activePane=\"bottomLeft\" state=\"frozen\"/></sheetView></sheetViews>")
+                writeColumnWidths(w, columns)
+                w.append("<sheetData>")
 
-                    writeRow(w, 1, columns, header = true)
-                    var rowIndex = 2
-                    while (cursor.moveToNext()) {
-                        writeCursorRow(w, cursor, rowIndex)
-                        rowIndex++
-                    }
-
-                    w.append("</sheetData>")
-                    if (columns.isNotEmpty()) {
-                        w.append("<autoFilter ref=\"A1:$lastColumn${max(1, rowIndex - 1)}\"/>")
-                    }
-                    w.append("</worksheet>")
+                writeRow(w, 1, columns, header = true)
+                var rowIndex = 2
+                while (cursor.moveToNext()) {
+                    writeCursorRow(w, cursor, rowIndex)
+                    rowIndex++
                 }
+
+                w.append("</sheetData>")
+                if (columns.isNotEmpty()) {
+                    w.append("<autoFilter ref=\"A1:$lastColumn${max(1, rowIndex - 1)}\"/>")
+                }
+                w.append("</worksheet>")
             }
-        } finally {
-            db?.close()
         }
     }
 
@@ -366,7 +327,7 @@ object DataXlsxExporter {
         val cleaned = raw
             .replace(Regex("[\\\\/*?:\\[\\]]"), "_")
             .trim()
-            .ifBlank { "Données" }
+            .ifBlank { "Donnees" }
 
         var candidate = cleaned.take(31)
         var suffix = 2
@@ -390,12 +351,15 @@ object DataXlsxExporter {
     }
 
     private fun describeTable(table: String): String = when (table.lowercase(Locale.ROOT)) {
-        "drive_orders" -> "Commandes Leclerc Drive : date, magasin, total, économies, Ticket E.Leclerc."
-        "drive_order_lines" -> "Lignes produits Drive : rayon, produit, quantité, prix unitaire et total."
-        "expenses", "expense" -> "Dépenses enregistrées dans le budget."
-        "categories", "category" -> "Catégories budgétaires."
-        "budgets", "budget" -> "Données de budget."
-        else -> "Données applicatives brutes de la table $table."
+        "drive_orders" -> "Commandes Leclerc Drive : date, magasin, total, economies, Ticket E.Leclerc."
+        "drive_order_lines" -> "Lignes produits Drive : rayon, produit, quantite, prix unitaire et total."
+        "expenses" -> "Depenses du budget courant."
+        "expense_archive" -> "Historique des depenses archivees."
+        "expense_categories" -> "Categories de depenses."
+        "monthly_budget" -> "Historique et parametres des budgets mensuels."
+        "fixed_charges" -> "Charges fixes."
+        "fixed_incomes" -> "Revenus fixes."
+        else -> "Donnees applicatives brutes de la table $table."
     }
 
     private fun xmlText(value: String): String {
