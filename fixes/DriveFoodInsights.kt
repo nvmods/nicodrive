@@ -4,6 +4,7 @@ import android.content.Context
 import android.content.SharedPreferences
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
@@ -20,6 +21,8 @@ import com.example.nicobudget.data.model.*
 import com.example.nicobudget.ui.components.EmptyHint
 import com.example.nicobudget.ui.components.SectionCard
 import com.example.nicobudget.ui.components.eur
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 private const val FOOD_OVERRIDE_PREFS = "drive_food_family_overrides"
 
@@ -28,6 +31,45 @@ private data class ClassifiedFoodLine(
     val key: String,
     val family: DriveFoodFamily
 )
+
+/** Résultat déjà agrégé pour une des trois lectures alimentaires. */
+private data class PreparedFoodView(
+    val visibleOrders: Int,
+    val visibleSpend: Double,
+    val visibleProducts: Int,
+    val familySummaries: List<DriveFoodFamilySummary>
+)
+
+/**
+ * Les 5 000+ lignes Drive sont classifiées une seule fois hors du thread Compose.
+ * Les trois vues ne font ensuite qu'un accès à cette structure déjà préparée.
+ */
+private data class PreparedFoodAnalysis(
+    val allPeriodOrders: Int,
+    val views: Map<DriveFoodView, PreparedFoodView>
+)
+
+/**
+ * Petit cache mémoire des agrégats d'affichage.
+ * Il ne contient pas les lignes brutes et est invalidé si le nombre de lignes,
+ * la période ou les corrections manuelles changent.
+ */
+private object FoodAnalysisMemoryCache {
+    private const val MAX_ENTRIES = 8
+    private val entries = LinkedHashMap<String, PreparedFoodAnalysis>(MAX_ENTRIES, 0.75f, true)
+
+    @Synchronized
+    fun get(key: String): PreparedFoodAnalysis? = entries[key]
+
+    @Synchronized
+    fun put(key: String, value: PreparedFoodAnalysis) {
+        entries[key] = value
+        while (entries.size > MAX_ENTRIES) {
+            val eldest = entries.entries.firstOrNull()?.key ?: break
+            entries.remove(eldest)
+        }
+    }
+}
 
 @Composable
 fun DriveFoodHabits(
@@ -42,6 +84,8 @@ fun DriveFoodHabits(
 
     var lines by remember { mutableStateOf<List<DriveFoodAnalysisLine>>(emptyList()) }
     var loading by remember { mutableStateOf(true) }
+    var preparing by remember { mutableStateOf(false) }
+    var prepared by remember { mutableStateOf<PreparedFoodAnalysis?>(null) }
     var foodView by remember { mutableStateOf(DriveFoodView.MAIN_DISHES) }
     var selectedFamily by remember { mutableStateOf<DriveFoodFamily?>(null) }
     var editingProduct by remember { mutableStateOf<DriveFoodProductSummary?>(null) }
@@ -55,48 +99,46 @@ fun DriveFoodHabits(
         }
     }
 
-    val periodLines = remember(lines, selectedScope) {
-        lines.filter { line ->
-            when {
-                selectedScope == "ALL" -> true
-                selectedScope.length == 4 -> line.month.startsWith(selectedScope)
-                else -> line.month == selectedScope
+    LaunchedEffect(lines, selectedScope, overrideRevision) {
+        if (lines.isEmpty()) {
+            prepared = null
+            preparing = false
+            return@LaunchedEffect
+        }
+
+        // Snapshot unique des corrections : on évite 5 000 accès SharedPreferences.
+        val overrides = prefs.all.mapNotNull { (key, value) ->
+            val family = (value as? String)?.let {
+                runCatching { DriveFoodFamily.valueOf(it) }.getOrNull()
             }
+            family?.let { key to it }
+        }.toMap()
+        val overrideSignature = overrides.entries
+            .sortedBy { it.key }
+            .fold(17) { acc, entry -> 31 * acc + entry.hashCode() }
+        val cacheKey = "${lines.size}|$selectedScope|$overrideSignature"
+
+        FoodAnalysisMemoryCache.get(cacheKey)?.let { cached ->
+            prepared = cached
+            preparing = false
+            return@LaunchedEffect
         }
-    }
 
-    val classified = remember(periodLines, foodView, overrideRevision) {
-        periodLines.map { line ->
-            val key = DriveProductNormalizer.key(line.label)
-            val override = prefs.familyOverride(key)
-            ClassifiedFoodLine(
-                line = line,
-                key = key,
-                family = DriveFoodClassifier.classify(line, override)
-            )
+        preparing = true
+        val result = withContext(Dispatchers.Default) {
+            prepareFoodAnalysis(lines, selectedScope, overrides)
         }
+        FoodAnalysisMemoryCache.put(cacheKey, result)
+        prepared = result
+        preparing = false
     }
 
-    val allPeriodOrders = remember(periodLines) {
-        periodLines.asSequence().map { it.orderRowId }.distinct().count()
-    }
-
-    val visibleLines = remember(classified, foodView) {
-        classified.filter { it.family.includedIn(foodView) }
-    }
-
-    val visibleOrders = remember(visibleLines) {
-        visibleLines.asSequence().map { it.line.orderRowId }.distinct().count()
-    }
-
-    val familySummaries = remember(visibleLines) {
-        buildFamilySummaries(visibleLines)
-    }
-
-    val visibleSpend = remember(visibleLines) { visibleLines.sumOf { it.line.total } }
-    val visibleProducts = remember(visibleLines) {
-        visibleLines.asSequence().map { it.key }.distinct().count()
-    }
+    val currentView = prepared?.views?.get(foodView)
+    val allPeriodOrders = prepared?.allPeriodOrders ?: 0
+    val visibleOrders = currentView?.visibleOrders ?: 0
+    val visibleSpend = currentView?.visibleSpend ?: 0.0
+    val visibleProducts = currentView?.visibleProducts ?: 0
+    val familySummaries = currentView?.familySummaries.orEmpty()
 
     SectionCard(
         Icons.Default.Storefront,
@@ -137,11 +179,30 @@ fun DriveFoodHabits(
         Spacer(Modifier.height(10.dp))
         if (loading) {
             LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(
+                "Lecture de l'historique Drive…",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            return@SectionCard
+        }
+        if (prepared == null && preparing) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Text(
+                "Préparation des statistiques alimentaires…",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             return@SectionCard
         }
         if (familySummaries.isEmpty()) {
             EmptyHint("Aucune donnée alimentaire reconnue pour cette période.")
             return@SectionCard
+        }
+
+        if (preparing) {
+            LinearProgressIndicator(Modifier.fillMaxWidth())
+            Spacer(Modifier.height(4.dp))
         }
 
         Text(
@@ -231,12 +292,8 @@ fun DriveFoodHabits(
                     }
                 },
                 text = {
-                    Column(
-                        Modifier
-                            .heightIn(max = 560.dp)
-                            .verticalScroll(rememberScrollState())
-                    ) {
-                        current.products.forEach { product ->
+                    LazyColumn(Modifier.heightIn(max = 560.dp)) {
+                        items(current.products, key = { it.key }) { product ->
                             val manuallyOverridden = prefs.contains(product.key)
                             Column(Modifier.padding(vertical = 5.dp)) {
                                 Text(product.label, fontWeight = FontWeight.SemiBold)
@@ -318,6 +375,53 @@ private fun SharedPreferences.familyOverride(key: String): DriveFoodFamily? =
     getString(key, null)?.let { stored ->
         runCatching { DriveFoodFamily.valueOf(stored) }.getOrNull()
     }
+
+private fun prepareFoodAnalysis(
+    allLines: List<DriveFoodAnalysisLine>,
+    selectedScope: String,
+    overrides: Map<String, DriveFoodFamily>
+): PreparedFoodAnalysis {
+    val periodLines = allLines.filter { line ->
+        when {
+            selectedScope == "ALL" -> true
+            selectedScope.length == 4 -> line.month.startsWith(selectedScope)
+            else -> line.month == selectedScope
+        }
+    }
+
+    val classified = periodLines.map { line ->
+        val key = DriveProductNormalizer.key(line.label)
+        ClassifiedFoodLine(
+            line = line,
+            key = key,
+            family = DriveFoodClassifier.classify(line, overrides[key])
+        )
+    }
+
+    val allPeriodOrders = periodLines.asSequence()
+        .map { it.orderRowId }
+        .distinct()
+        .count()
+
+    // Les familles et produits sont agrégés une seule fois. Une vue ne fait ensuite
+    // que filtrer les familles déjà préparées.
+    val allFamilySummaries = buildFamilySummaries(classified)
+
+    val views = DriveFoodView.entries.associateWith { view ->
+        val visible = classified.filter { it.family.includedIn(view) }
+        PreparedFoodView(
+            visibleOrders = visible.asSequence().map { it.line.orderRowId }.distinct().count(),
+            visibleSpend = visible.sumOf { it.line.total },
+            visibleProducts = visible.asSequence().map { it.key }.distinct().count(),
+            familySummaries = allFamilySummaries.filter { it.family.includedIn(view) }
+        )
+    }
+
+    return PreparedFoodAnalysis(
+        allPeriodOrders = allPeriodOrders,
+        views = views
+    )
+}
 
 private fun buildFamilySummaries(
     lines: List<ClassifiedFoodLine>
