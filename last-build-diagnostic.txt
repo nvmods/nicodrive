@@ -1,7 +1,7 @@
-run_id=32168451955
-run_number=154
-head_sha=f264636bff1dc4161bab566b574e028c9336cfc0
-timestamp=2026-08-18T17:58:31Z
+run_id=32171753915
+run_number=156
+head_sha=2abcac0ed362629953ac05fab5ec56c1e8efb2cf
+timestamp=2026-08-18T18:34:33Z
 
 ===== PATCH =====
 Correctifs projet appliqués :
@@ -53,13 +53,10 @@ Panneaux de stats performants appliqués : projet/app/src/main/java/com/example/
 - Alimentation : classification alimentaire seulement
 - Tendances : graphes/comparaisons/insights seulement
 - Historique : totaux annuels + mois seulement
-Bloc calcul alimentaire DriveFoodHabits non reconnu
+Stats alimentaires déjà optimisées : projet/app/src/main/java/com/example/nicobudget/ui/DriveFoodInsights.kt
+- préparation hors thread Compose déjà présente
+- cache mémoire des agrégats déjà présent
 Reset d'année multi-Drive appliqué dans projet/app/src/main/java/com/example/nicobudget/ui/LeclercHistoryDialog.kt
-Traceback (most recent call last):
-  File "/home/runner/work/nicodrive/nicodrive/fixes/patch_multidrive_year_reset.py", line 105, in <module>
-    subprocess.run([sys.executable, str(patch), str(root)], check=True)
-  File "/usr/lib/python3.12/subprocess.py", line 571, in run
-    raise CalledProcessError(retcode, process.args,
-subprocess.CalledProcessError: Command '['/usr/bin/python3', '/home/runner/work/nicodrive/nicodrive/fixes/patch_food_render_perf.py', 'projet']' returned non-zero exit status 1.
+Patch introuvable: /home/runner/work/nicodrive/nicodrive/fixes/patch_budget_stats_and_food_rules.py
 
 ===== BUILD =====
