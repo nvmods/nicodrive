@@ -87,6 +87,8 @@ for patch_name in (
     "patch_mail_html_fallback.py",
     "patch_drive_current_cycle.py",
     "patch_history_budget_reconcile.py",
+    "patch_budget_cycle_metadata.py",
+    "patch_product_normalization.py",
 ):
     patch = Path(__file__).with_name(patch_name)
     if not patch.exists():
