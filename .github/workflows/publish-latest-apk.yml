@@ -1,0 +1,47 @@
+name: Publish latest APK
+
+on:
+  workflow_run:
+    workflows: ["Build APK"]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: write
+
+jobs:
+  publish:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Télécharger l'artefact du build
+        uses: actions/download-artifact@v4
+        with:
+          name: NicoBudget-debug-apk
+          path: artifact
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          run-id: ${{ github.event.workflow_run.id }}
+
+      - name: Préparer l'APK
+        run: |
+          set -e
+          APK=$(find artifact -type f -name '*.apk' | head -1)
+          test -n "$APK"
+          cp "$APK" NicoBudget-latest-debug.apk
+          ls -lh NicoBudget-latest-debug.apk
+
+      - name: Publier l'APK latest-debug
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          if gh release view latest-debug --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload latest-debug NicoBudget-latest-debug.apk --clobber --repo "$GITHUB_REPOSITORY"
+          else
+            gh release create latest-debug NicoBudget-latest-debug.apk \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "${{ github.event.workflow_run.head_sha }}" \
+              --title "NicoBudget - dernière build de test" \
+              --notes "APK debug automatiquement publié après un build réussi." \
+              --prerelease
+          fi
