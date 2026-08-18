@@ -80,9 +80,10 @@ text = text.replace(old_loop, new_loop, 1)
 target.write_text(text, encoding="utf-8")
 print(f"Reset d'année multi-Drive appliqué dans {target}")
 
-# Ce script est le dernier patch du workflow actuel : on en profite pour
-# installer l'export XLSX après tous les correctifs de l'écran de statistiques.
-xlsx_patch = Path(__file__).with_name("patch_xlsx_export.py")
-if not xlsx_patch.exists():
-    raise SystemExit(f"Patch XLSX introuvable: {xlsx_patch}")
-subprocess.run([sys.executable, str(xlsx_patch), str(root)], check=True)
+# Ce script est le dernier patch du workflow actuel : on en profite pour lancer
+# les correctifs qui doivent passer après la copie des sources de base.
+for patch_name in ("patch_xlsx_export.py", "patch_mail_url_sanitize.py"):
+    patch = Path(__file__).with_name(patch_name)
+    if not patch.exists():
+        raise SystemExit(f"Patch introuvable: {patch}")
+    subprocess.run([sys.executable, str(patch), str(root)], check=True)
