@@ -12,7 +12,25 @@ if not target.exists():
 
 text = target.read_text(encoding="utf-8")
 
-# Calculs de classification/regroupement hors du thread Compose.
+# La source fixes/DriveFoodInsights.kt contient désormais directement la version
+# optimisée (agrégats préparés hors UI + cache mémoire). Le patch reste dans la
+# chaîne pour compatibilité avec les anciens ZIP, mais ne doit surtout pas essayer
+# de réécrire une seconde fois cette nouvelle implémentation.
+if (
+    "private data class PreparedFoodAnalysis" in text
+    and "private object FoodAnalysisMemoryCache" in text
+    and "prepareFoodAnalysis(" in text
+    and "Dispatchers.Default" in text
+):
+    print(f"Stats alimentaires déjà optimisées : {target}")
+    print("- préparation hors thread Compose déjà présente")
+    print("- cache mémoire des agrégats déjà présent")
+    raise SystemExit(0)
+
+# ---------------------------------------------------------------------------
+# Compatibilité avec une ancienne source DriveFoodInsights : calculs de
+# classification/regroupement hors du thread Compose.
+# ---------------------------------------------------------------------------
 if "import kotlinx.coroutines.Dispatchers" not in text:
     anchor = "import com.example.nicobudget.ui.components.eur\n"
     if anchor not in text:
@@ -124,9 +142,6 @@ state_new = '''    var lines by remember { mutableStateOf<List<DriveFoodAnalysis
         }
     }
 
-    // La classification est le traitement CPU le plus coûteux. Elle est faite une
-    // seule fois pour tout l'historique et hors du thread graphique. Une correction
-    // manuelle invalide simplement ce cache.
     LaunchedEffect(lines, overrideRevision) {
         if (lines.isEmpty()) {
             classifiedAll = emptyList()
@@ -159,8 +174,6 @@ state_new = '''    var lines by remember { mutableStateOf<List<DriveFoodAnalysis
         }
     }
 
-    // Pour une période donnée on prépare les trois vues en une fois. Les boutons
-    // Tout alimentaire / Repas / Plats principaux deviennent ensuite instantanés.
     LaunchedEffect(classifiedAll, selectedScope) {
         if (classifiedAll.isEmpty()) {
             snapshot = null
