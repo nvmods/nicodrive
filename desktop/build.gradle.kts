@@ -7,7 +7,9 @@ plugins {
 }
 
 group = "com.nicobudget"
-version = "0.1.0"
+val desktopBuild = (System.getenv("NICO_DESKTOP_BUILD")?.toIntOrNull() ?: 1).coerceIn(0, 65535)
+val desktopVersion = "0.1.$desktopBuild"
+version = desktopVersion
 
 kotlin {
     jvmToolchain(21)
@@ -28,13 +30,13 @@ compose.desktop {
         nativeDistributions {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "NicoBudget"
-            packageVersion = "0.1.0"
+            packageVersion = desktopVersion
             description = "NicoBudget Desktop - budget, statistiques, Drive et menus"
             vendor = "NicoBudget"
             includeAllModules = true
 
             windows {
-                packageVersion = "0.1.0"
+                packageVersion = desktopVersion
                 dirChooser = true
                 perUserInstall = true
                 menuGroup = "NicoBudget"
