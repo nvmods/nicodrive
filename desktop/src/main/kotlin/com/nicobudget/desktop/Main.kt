@@ -21,10 +21,10 @@ internal enum class Section(val label: String, val glyph: String) {
     EXPENSES("Dépenses", "€"),
     BUDGET("Budget & récurrents", "¤"),
     ARCHIVES("Archives", "▣"),
-    STATS("Statistiques", "▥"),
+    STATS("Stats & analyses", "▥"),
     DRIVE("Leclerc Drive", "▤"),
     MENUS("Menus & courses", "☷"),
-    DATA("Données & backup", "⇄"),
+    DATA("Données & échanges", "⇄"),
     SYNC("Synchronisation", "↔")
 }
 
@@ -49,7 +49,7 @@ internal class AppModel {
 }
 
 fun main() = application {
-    val state = rememberWindowState(width = 1440.dp, height = 900.dp)
+    val state = rememberWindowState(width = 1480.dp, height = 920.dp)
     Window(
         onCloseRequest = ::exitApplication,
         title = "NicoBudget Desktop",
@@ -77,7 +77,7 @@ private fun NicoBudgetDesktop(model: AppModel) {
                 verticalArrangement = Arrangement.spacedBy(6.dp)
             ) {
                 Text("NicoBudget", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-                Text("Desktop 0.2", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("Desktop 0.3", style = MaterialTheme.typography.labelMedium, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Spacer(Modifier.height(12.dp))
 
                 Section.entries.forEach { item ->
@@ -146,14 +146,14 @@ private fun NicoBudgetDesktop(model: AppModel) {
                     )
                 } else {
                     when (model.section) {
-                        Section.DASHBOARD -> DashboardScreen(model.revision)
+                        Section.DASHBOARD -> DashboardV03Screen(model)
                         Section.EXPENSES -> ExpensesParityScreen(model)
                         Section.BUDGET -> BudgetManagementScreen(model)
                         Section.ARCHIVES -> ArchivesParityScreen(model)
-                        Section.STATS -> BudgetStatsDesktopScreen(model.revision)
-                        Section.DRIVE -> DriveDesktopScreen(model.revision)
+                        Section.STATS -> AnalyticsV03Screen(model)
+                        Section.DRIVE -> DriveV03Screen(model)
                         Section.MENUS -> MenusParityScreen(model)
-                        Section.DATA -> DataDesktopScreen(model)
+                        Section.DATA -> DataV03Screen(model)
                         Section.SYNC -> SyncDesktopScreen()
                     }
                 }
@@ -173,12 +173,12 @@ private fun EmptyDesktopState(onImport: () -> Unit) {
             ) {
                 Text("Bienvenue dans NicoBudget Desktop", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
                 Text(
-                    "Exporte un fichier .nbbackup depuis le téléphone puis importe-le ici. Le PC crée ensuite sa propre base locale et fonctionne hors ligne.",
+                    "Importe un fichier .nbbackup NicoBudget. Le PC crée sa base locale puis toutes les actions métier fonctionnent hors ligne.",
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Button(onClick = onImport) { Text("Choisir un backup NicoBudget") }
                 Text(
-                    "Les cookies et secrets Leclerc ne sont pas contenus dans le backup.",
+                    "La synchronisation automatique sera choisie et ajoutée dans une étape séparée.",
                     style = MaterialTheme.typography.labelMedium,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
