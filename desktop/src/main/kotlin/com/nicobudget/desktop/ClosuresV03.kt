@@ -11,6 +11,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import java.sql.Connection
 import java.sql.DriverManager
+import java.text.NumberFormat
 import java.time.LocalDate
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -121,7 +122,7 @@ internal fun ClosuresV03Screen(model: AppModel) {
     }
 
     if (confirmCycle) {
-        val nextStart = budget.string("endDate")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
+        val nextStart = budget?.string("endDate")?.let { runCatching { LocalDate.parse(it) }.getOrNull() }
         AlertDialog(
             onDismissRequest = { confirmCycle = false },
             title = { Text("Clôturer le cycle ?") },
