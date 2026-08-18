@@ -1,5 +1,8 @@
 package com.example.nicobudget.data.model
 
+import java.text.Normalizer
+import java.util.Locale
+
 /** Une ligne Drive enrichie de sa commande et de son mois pour les analyses alimentaires. */
 data class DriveFoodAnalysisLine(
     val orderRowId: Int,
@@ -94,10 +97,13 @@ object DriveFoodClassifier {
     ): DriveFoodFamily {
         override?.let { return it }
 
-        val section = DriveProductNormalizer.key(line.section)
-        val label = DriveProductNormalizer.key(line.label)
+        // Ici on ne réutilise volontairement pas DriveProductNormalizer.key() :
+        // ce dernier singularise quelques mots pour regrouper des références,
+        // alors que le classificateur a besoin de conserver les libellés/rayons
+        // tels qu'ils sont écrits ("fruits légumes", "boissons", "frites", etc.).
+        val section = classificationKey(line.section)
+        val label = classificationKey(line.label)
 
-        // Sections non alimentaires fiables dans les bons Leclerc.
         if (
             section.containsAny(
                 "animalerie", "hygiene beaute", "entretien nettoyage",
@@ -105,7 +111,6 @@ object DriveFoodClassifier {
             )
         ) return DriveFoodFamily.NON_FOOD
 
-        // Sécurité lorsque le rayon est absent ou atypique.
         if (
             label.containsAny(
                 "papier toilette", "essuie tout", "mouchoir", "serviette hygienique",
@@ -117,9 +122,8 @@ object DriveFoodClassifier {
             )
         ) return DriveFoodFamily.NON_FOOD
 
-        // Boissons avant les laitages : les boissons végétales sont réellement bues.
         if (
-            section == "boisson" || section == "boissons" ||
+            section == "boissons" ||
             label.containsAny(
                 "soda", "eau gazeuse", "eau minerale", "jus de", "pur jus",
                 "boisson vegetale", "lait amande", "lait d amande", "sirop",
@@ -127,8 +131,6 @@ object DriveFoodClassifier {
             )
         ) return DriveFoodFamily.DRINKS
 
-        // Petit-déjeuner / viennoiseries : c'est précisément ce qu'on veut pouvoir
-        // masquer pour lire les habitudes de repas.
         if (
             label.containsAny(
                 "croissant", "pain au chocolat", "brioche", "cereale", "muesli",
@@ -145,8 +147,6 @@ object DriveFoodClassifier {
                 "flan", "mousse au chocolat", "madeleine", "brownie", "gaufre"
             )
         ) {
-            // Le pain de mie est rangé en épicerie sucrée chez Leclerc mais reste
-            // un aliment de repas, pas un dessert.
             if (label.containsAny("pain de mie", "pain complet")) return DriveFoodFamily.BREAD
             return DriveFoodFamily.DESSERTS
         }
@@ -165,14 +165,13 @@ object DriveFoodClassifier {
             )
         ) return DriveFoodFamily.CONDIMENTS
 
-        // Plats identifiables avant les ingrédients génériques.
         if (label.containsAny("pizza", "quiche", "tarte aux poireaux", "tarte salee")) {
             return DriveFoodFamily.PIZZA_QUICHE
         }
 
         if (
             label.containsAny(
-                "sandwich", "salade & cie", "salade repas", "salade composee",
+                "sandwich", "salade cie", "salade repas", "salade composee",
                 "taboule", "wrap "
             )
         ) return DriveFoodFamily.SANDWICH_SALAD
@@ -185,18 +184,15 @@ object DriveFoodClassifier {
             )
         ) return DriveFoodFamily.READY_MEALS
 
-        // Protéines animales.
         if (
             label.containsAny(
-                "poulet", "dinde", "volaille", "cordon bleu", "nugget", "escalope de dinde",
-                "filet poulet", "poulet jaune"
+                "poulet", "dinde", "volaille", "cordon bleu", "nugget",
+                "escalope de dinde", "filet poulet", "poulet jaune"
             )
         ) return DriveFoodFamily.POULTRY
 
         if (
-            label.containsAny(
-                "boeuf", "steak hache", "steak charolais", "viande hachee"
-            )
+            label.containsAny("boeuf", "steak hache", "steak charolais", "viande hachee")
         ) return DriveFoodFamily.BEEF
 
         if (
@@ -215,25 +211,23 @@ object DriveFoodClassifier {
 
         if (label.containsAny("oeuf", "oeufs")) return DriveFoodFamily.EGGS
 
-        // Féculents et accompagnements.
         if (
             label.containsAny(
-                "pomme de terre", "pommes de terre", "frites", "rosti", "rosti ",
-                "pommes noisette", "pommes rissolee"
+                "pomme de terre", "pommes de terre", "frites", "rosti",
+                "pommes noisettes", "pommes rissolees"
             )
         ) return DriveFoodFamily.POTATOES
 
         if (
             label.containsAny(
-                "pates ", "pate ", "spaghetti", "torsade", "macaroni", "riz ",
+                "pates ", "spaghetti", "torsade", "macaroni", "riz ",
                 "semoule", "couscous", "quinoa", "boulgour", "polenta", "gnocchi"
             )
         ) return DriveFoodFamily.STARCHES
 
-        // Fruits avant le fallback Fruits/Légumes.
         if (
             label.containsAny(
-                "banane", "pomme bicolore", "pommes bicolore", "prune", "poire ",
+                "banane", "pomme bicolore", "pommes bicolores", "prune", "poire ",
                 "fraise", "raisin", "kiwi", "melon", "pasteque", "peche", "nectarine",
                 "abricot", "clementine", "mandarine", "orange ", "citron ", "ananas"
             )
@@ -248,8 +242,6 @@ object DriveFoodClassifier {
             )
         ) return DriveFoodFamily.VEGETABLES
 
-        // Produits laitiers et pain restent dans la vue "Repas", mais disparaissent
-        // en mode "Plats principaux".
         if (
             label.containsAny(
                 "fromage", "emmental", "mozzarella", "camembert", "chevre", "comte",
@@ -262,7 +254,6 @@ object DriveFoodClassifier {
             label.containsAny("baguette", "pain burger", "pain hot dog", "pain de mie", "pain precuit")
         ) return DriveFoodFamily.BREAD
 
-        // Fallbacks de rayon, après les règles précises.
         if (section.contains("viandes poissons")) return DriveFoodFamily.OTHER_CORE
         if (section.contains("charcuterie traiteur")) return DriveFoodFamily.READY_MEALS
         if (section.contains("surgeles")) return DriveFoodFamily.OTHER_CORE
@@ -272,6 +263,15 @@ object DriveFoodClassifier {
 
         return DriveFoodFamily.OTHER_FOOD
     }
+
+    private fun classificationKey(value: String): String =
+        Normalizer.normalize(value, Normalizer.Form.NFD)
+            .replace(Regex("\\p{M}+"), "")
+            .lowercase(Locale.FRANCE)
+            .replace('œ', 'o')
+            .replace(Regex("[^a-z0-9%]+"), " ")
+            .trim()
+            .replace(Regex("\\s+"), " ")
 
     private fun String.containsAny(vararg needles: String): Boolean =
         needles.any { contains(it) }
