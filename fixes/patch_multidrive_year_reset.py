@@ -90,6 +90,7 @@ for patch_name in (
     "patch_budget_cycle_metadata.py",
     "patch_product_normalization.py",
     "patch_food_habits.py",
+    "patch_menu_planner.py",
 ):
     patch = Path(__file__).with_name(patch_name)
     if not patch.exists():
