@@ -17,9 +17,9 @@ La cible est la parité fonctionnelle avec l'application Android : Windows n'est
 - statistiques par catégorie ;
 - historique Leclerc Drive ;
 - planning midi/soir éditable ;
-- modification du nombre de convives et des repas ;
+- modification du nombre de convives, des repas et du verrouillage ;
 - incompatibilités alimentaires éditables ;
-- profils personnes éditables ;
+- profils personnes éditables et affectables aux repas ;
 - export `.nbbackup` réinjectable sur Android ;
 - écran préparé pour la future synchronisation LAN.
 
